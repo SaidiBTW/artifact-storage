@@ -1,0 +1,36 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize)]
+pub struct UploadFileDto {
+    bucket_name: String,
+    key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UploadSuccessResponseDto {
+    pub object_name: String,
+    pub bucket: String,
+    pub size_bytes: usize,
+    pub message: String,
+}
+
+#[derive(Deserialize, Debug, Serialize)]
+pub struct UploadRequestDto {
+    pub file_name: String,
+    pub bucket_name: String,
+}
+
+impl Default for UploadRequestDto {
+    fn default() -> Self {
+        Self {
+            file_name: Default::default(),
+            bucket_name: Default::default(),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Serialize)]
+pub struct DownloadRequestDto {
+    pub key: String,
+    pub bucket_name: String,
+}

@@ -1,0 +1,20 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+serde = { workspace = true }
+sqlx = { workspace = true, features = ["uuid", "chrono", "runtime-tokio"] }
+uuid = { version = "1.23.2", features = ["serde", "v4"] }
+tracing = { workspace = true }
+sled = "0.34.7"
+minio = { workspace = true }
+dotenvy = { workspace = true }
+tokio-util = { version = "0.7.18", features = ["io"] }
+futures-util = "0.3.32"
+axum = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+sha2 = "0.10"
