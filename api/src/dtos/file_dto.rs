@@ -12,6 +12,7 @@ pub struct UploadSuccessResponseDto {
     pub bucket: String,
     pub size_bytes: usize,
     pub message: String,
+    pub is_passthrough: bool,
 }
 
 #[derive(Deserialize, Debug, Serialize)]

@@ -7,14 +7,20 @@ use axum::{
 };
 
 use crate::{
-    handlers::{auth_handler::login, file_handler::upload_handler, user_handler::get_user},
+    handlers::{
+        auth_handler::login,
+        file_handler::{download_handler, upload_handler},
+        user_handler::get_user,
+    },
     types::app_state::AppState,
 };
 
 pub fn create_router(app_state: Arc<AppState>) -> Router {
     let auth_routes = Router::new().route("/login", post(login));
     let user_routes = Router::new().route("/get", get(get_user));
-    let file_routes = Router::new().route("/upload", post(upload_handler));
+    let file_routes = Router::new()
+        .route("/upload", post(upload_handler))
+        .route("/download", get(download_handler));
 
     Router::new()
         .route("/", get(|| async { "Auth Service Running" }))
@@ -33,7 +39,9 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use jsonwebtoken::{EncodingKey, Header, encode};
+    use shared::s3_client::AppError;
     use tower::ServiceExt;
+    use tower_http::classify::GrpcCode::Ok;
 
     use crate::{
         routes::create_router,
@@ -42,16 +50,24 @@ mod tests {
     };
 
     async fn test_state() -> AppState {
-        AppState {
-            auth_service: AuthService::new(),
-            db: shared::db::init_pool(
-                &var("DATABASE_URL")
-                    .expect("DATABASE_URL has not been set")
-                    .to_string(),
-            )
-            .await,
-            storage: shared::s3_client::init_s3_client().await,
-        }
+        let mut is_passthrough_state = false;
+
+        let storage = shared::s3_client::init_s3_client().await.unwrap();
+        let db = match shared::db::init_pool(
+            &var("DATABASE_URL")
+                .expect("DATABASE_URL not set")
+                .to_string(),
+        )
+        .await
+        {
+            Result::Err(err) => {
+                println!("{:?}", err);
+                is_passthrough_state = true;
+                Result::Err(AppError::DatabaseTimeout)
+            }
+            Result::Ok(pool) => Result::Ok(pool),
+        };
+        AppState::init().await.unwrap()
     }
 
     #[tokio::test]
@@ -74,11 +90,7 @@ mod tests {
         dotenvy::dotenv().ok();
         let auth_service = AuthService::new();
         let tokens = auth_service.generate_tokens("123456789").ok().unwrap();
-        let app = create_router(Arc::new(AppState {
-            auth_service: auth_service,
-            db: shared::db::init_pool(&var("DATABASE_URL").unwrap().to_string()).await,
-            storage: shared::s3_client::init_s3_client().await,
-        }));
+        let app = create_router(Arc::new(test_state().await));
 
         let req = Request::builder()
             .uri("/user/get")

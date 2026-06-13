@@ -15,11 +15,7 @@ async fn main() {
     dotenv().ok();
     init_tracing();
 
-    let app_state = Arc::new(AppState {
-        auth_service: AuthService::new(),
-        db: shared::db::init_pool(&var("DATABASE_URL").unwrap().to_string()).await,
-        storage: shared::s3_client::init_s3_client().await,
-    });
+    let app_state = Arc::new(AppState::init().await.unwrap());
 
     let app = create_router(app_state)
         .layer(init_req_tracer())

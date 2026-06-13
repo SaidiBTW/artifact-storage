@@ -1,5 +1,5 @@
-INSERT INTO  artifact_metadata(url, checksum, etag)
-VALUES ($1,$2,$3)
+INSERT INTO  artifact_metadata(url, checksum, etag, last_modified)
+VALUES ($1,$2,$3, NOW())
 ON CONFLICT (url) DO UPDATE
 SET etag = EXCLUDED.etag,
 checksum = EXCLUDED.checksum,

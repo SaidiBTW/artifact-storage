@@ -26,3 +26,54 @@ impl IntoResponse for AuthError {
         (status, body).into_response()
     }
 }
+
+pub enum UploadError {
+    UploadConflict,
+    OtherError,
+}
+
+impl IntoResponse for UploadError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            UploadError::UploadConflict => {
+                (StatusCode::CONFLICT, "Error Unique violation constraint")
+            }
+            UploadError::OtherError => (StatusCode::INTERNAL_SERVER_ERROR, "Other Error Occurred"),
+        };
+
+        let body = Json(serde_json::json!({
+            "error": error_message
+        }));
+
+        (status, body).into_response()
+    }
+}
+
+pub enum DownloadError {
+    FetchingMetadataError,
+    MetadataNotFound,
+    NotModified,
+}
+
+impl IntoResponse for DownloadError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match self {
+            DownloadError::FetchingMetadataError => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Error Fetching Metadata")
+            }
+            DownloadError::MetadataNotFound => (StatusCode::NOT_FOUND, "Metadata not found"),
+            DownloadError::NotModified => (StatusCode::NOT_MODIFIED, "Not modified"),
+        };
+
+        let body = Json(serde_json::json!({
+            "error": error_message
+        }));
+
+        (status, body).into_response()
+    }
+}
+
+pub enum AppError {
+    DatabaseTimeout,
+    MinioTimeout,
+}

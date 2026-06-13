@@ -1,3 +1,4 @@
+use axum::body::Body;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 
@@ -13,7 +14,11 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Error};
 use std::pin::Pin;
-pub async fn init_s3_client() -> MinioClient {
+use std::sync::mpsc;
+
+const MIN_MULTI_PART_SIZE: usize = 5 * 1024 * 1024; //5 MB
+pub async fn init_s3_client() -> Result<MinioClient, AppError> {
+    tracing::info!("Intiing S3 Client");
     dotenvy::dotenv().ok();
     let base_url = var("MINIO_URL")
         .expect("Minio URL should be defined")
@@ -22,7 +27,89 @@ pub async fn init_s3_client() -> MinioClient {
     let static_provider = StaticProvider::new("minioadmin", "minioadminpassword", None);
     let client = MinioClient::new(base_url, Some(static_provider), None, None).unwrap();
 
-    client
+    match client.list_buckets().build().send().await {
+        Ok(_) => {
+            tracing::info!("Can list buckets. Minio Is online")
+        }
+        Err(err) => match err {
+            minio::s3::error::Error::Network(network_error) => match network_error {
+                minio::s3::error::NetworkError::ServerError(_) => {
+                    tracing::error!("Server Error experienced due to wrong URL");
+                    return Err(AppError::MinioTimeout);
+                }
+                minio::s3::error::NetworkError::ReqwestError(error) => {
+                    tracing::error!("Server Error experienced due to wrong URL");
+                    return Err(AppError::MinioTimeout);
+                }
+            },
+            // err => {
+            //     tracing::info!("Error {:?}", err)
+            // }
+            minio::s3::error::Error::S3Server(s3_server_error) => match s3_server_error {
+                minio::s3::error::S3ServerError::InvalidServerResponse {
+                    message,
+                    http_status_code,
+                    content_type,
+                } => {
+                    tracing::info!("Cannot connect to server");
+                    return Err(AppError::MinioTimeout);
+                }
+                _ => todo!(),
+            },
+            _ => todo!(), // minio::s3::error::Error::DriveIo(io_error) => todo!(),
+                          // minio::s3::error::Error::Validation(validation_err) => todo!(),
+        },
+    };
+
+    Ok(client)
+}
+
+pub async fn init_saas_s3_client() -> Result<MinioClient, AppError> {
+    tracing::info!("Initializaing SAAS Client");
+    dotenvy::dotenv().ok();
+
+    let base_url = var("MINIO_SAAS_URL")
+        .expect("Minio SAAS Url not defined")
+        .parse::<BaseUrl>()
+        .unwrap();
+
+    let static_provider = StaticProvider::new("miniosaas", "miniosaaspassword", None);
+
+    let client = MinioClient::new(base_url, Some(static_provider), None, None).unwrap();
+
+    match client.list_buckets().build().send().await {
+        Ok(_) => {
+            tracing::info!("Can list bucket. SAAS Minio is online");
+        }
+        Err(err) => match err {
+            minio::s3::error::Error::Network(network_error) => match network_error {
+                minio::s3::error::NetworkError::ServerError(_) => {
+                    tracing::error!("Server Error experienced due to wrong URL");
+                    return Err(AppError::SaasS3Error);
+                }
+                minio::s3::error::NetworkError::ReqwestError(error) => {
+                    tracing::error!("Server Error experienced due to wrong URL");
+                    return Err(AppError::SaasS3Error);
+                }
+            },
+            // err => {
+            //     tracing::info!("Error {:?}", err)
+            // }
+            minio::s3::error::Error::S3Server(s3_server_error) => match s3_server_error {
+                minio::s3::error::S3ServerError::InvalidServerResponse {
+                    message,
+                    http_status_code,
+                    content_type,
+                } => {
+                    tracing::info!("Cannot connect to server");
+                    return Err(AppError::SaasS3Error);
+                }
+                _ => todo!(),
+            },
+            _ => todo!(),
+        },
+    };
+    Ok(client)
 }
 pub async fn verify_and_setup_storage(client: &minio::s3::client::MinioClient) {
     tracing::info!("Fetching buckets");
@@ -154,6 +241,13 @@ pub async fn download_proxy_handler(
     // let mut downloaded_bytes = 0;
     let (stream, size) = get_res.into_boxed_stream().unwrap();
 
+    // let mapped_stream = stream.map(|result| {
+    //     result.map_err(|minio_err| {
+    //         std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
+    //     })
+    // });
+    // let body = Body::from_stream(mapped_stream);
+
     // let mapped_stream = byte_stream.map(|result| {
     //     result.map_err(|minio_err| {
     //         std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
@@ -194,4 +288,12 @@ pub async fn ensure_bucket(client: &MinioClient, bucket_name: &str) {
             .await
             .unwrap();
     }
+}
+
+#[derive(Debug)]
+pub enum AppError {
+    DatabaseTimeout,
+    MinioTimeout,
+    ProxyError,
+    SaasS3Error,
 }

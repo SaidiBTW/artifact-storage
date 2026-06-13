@@ -1,5 +1,16 @@
+use axum::body::BodyDataStream;
 use axum::debug_handler;
+use axum::http::HeaderMap;
+use axum_extra::headers;
+use minio::s3::MinioClient;
+use minio::s3::types::S3Api;
+use sha2::{Digest, Sha256};
+use sqlx::Error;
+use sqlx::types::chrono::{DateTime, Utc};
+use sqlx::{error::ErrorKind, postgres::PgDatabaseError};
 use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
 
 use axum::{
     Json,
@@ -21,6 +32,7 @@ use shared::{
 };
 
 use crate::dtos::file_dto::{DownloadRequestDto, UploadRequestDto};
+use crate::types::error::{DownloadError, UploadError};
 use crate::{dtos::file_dto::UploadSuccessResponseDto, types::app_state::AppState};
 
 // async fn download_handler(State(state): State<Arc<AppState>>, Json(payload): Json<DownloadFileDto>) -> {}
@@ -50,7 +62,7 @@ pub async fn upload_handler(
     }
 
     match upload_stream(
-        &state.storage,
+        &state.saas_storage,
         &metadata.bucket_name,
         &metadata.file_name,
         chunks,
@@ -63,17 +75,39 @@ pub async fn upload_handler(
                 bucket: metadata.bucket_name.clone(),
                 message: "File successfully uploaded".to_string(),
                 size_bytes: total_upload_size,
+                is_passthrough: state.should_passthrough.to_owned(),
             };
-            tracing::info!("Saving file to db");
-            ArtifactMetadataRepository::upsert(
-                &state.db,
-                &format!("{}/{}", &success_dto.bucket, success_dto.object_name),
-                &checksum,
-                &checksum,
-            )
-            .await
-            .unwrap();
 
+            // tracing::info!("Saving file to db");
+            // let result = ArtifactMetadataRepository::upsert(
+            //     &state.db.as_ref().unwrap(),
+            //     &format!("{}/{}", &success_dto.bucket, success_dto.object_name),
+            //     &checksum,
+            //     &checksum,
+            // )
+            // .await;
+
+            // match result {
+            //     Ok(result) => {
+            //         return (StatusCode::CREATED, Json(success_dto)).into_response();
+            //     }
+            //     Err(Error::Database(db_err)) => {
+            //         let pg_err = db_err.downcast_ref::<PgDatabaseError>();
+            //         if pg_err.code() == "23505" {
+            //             tracing::error!("Unique vioation for {}", checksum);
+            //             return UploadError::UploadConflict.into_response();
+            //         } else {
+            //             return UploadError::OtherError.into_response();
+            //         }
+            //     }
+            //     Err(e) => {
+            //         return (
+            //             StatusCode::INTERNAL_SERVER_ERROR,
+            //             Json::from("Error Unique violation constraint"),
+            //         )
+            //             .into_response();
+            //     }
+            // }
             return (StatusCode::CREATED, Json(success_dto)).into_response();
         }
         Err(e) => {
@@ -86,10 +120,227 @@ pub async fn upload_handler(
 
 pub async fn download_handler(
     State(state): State<Arc<AppState>>,
-    Path(object_name): Path<String>,
-    Query(metadata): Query<DownloadRequestDto>,
+    Query(query_meta): Query<DownloadRequestDto>,
+    headers: HeaderMap,
 ) -> Response {
-    match download_proxy_handler(&state.storage, &metadata.bucket_name, &metadata.key).await {
+    let url = format!("{}/{}", query_meta.bucket_name, query_meta.key);
+
+    if !state.should_passthrough {
+        let result =
+            ArtifactMetadataRepository::find_by_url(&&state.proxy_state.as_ref().unwrap().db, &url)
+                .await;
+
+        let cache_client = &state.proxy_state.as_ref().unwrap().storage;
+
+        match result {
+            Ok(db_result) => match db_result {
+                Some(metadata) => {
+                    //Evaluate IF-NONE_MATCH header
+                    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
+                        let client_etag = if_none_match.to_str().unwrap_or("");
+                        if let Some(ref etag) = metadata.etag {
+                            let is_match = client_etag == "*" || etag == client_etag;
+
+                            if is_match {
+                                tracing::error!("Not modified since last pull");
+                                return DownloadError::NotModified.into_response();
+                            }
+                        }
+                    }
+
+                    //Evaluat IF_MODIFIED_SINCE header
+                    if let Some(if_modified_since) = headers.get(header::IF_MODIFIED_SINCE) {
+                        let last_modified = metadata.last_modified;
+
+                        if let Ok(since_str) = if_modified_since.to_str() {
+                            if let Ok(since) = DateTime::parse_from_rfc2822(since_str) {
+                                let since: DateTime<Utc> = since.into();
+                                if let Some(last_modified) = last_modified {
+                                    let last_mod_secs = last_modified.timestamp();
+                                    let since_secs = since.timestamp();
+                                    println!("{:?} Since-{:?}", last_mod_secs, since_secs);
+
+                                    if last_mod_secs <= since_secs {
+                                        return DownloadError::NotModified.into_response();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    match download_proxy_handler(
+                        &cache_client,
+                        &query_meta.bucket_name,
+                        &query_meta.key,
+                    )
+                    .await
+                    {
+                        Ok((stream, total_size)) => {
+                            let mapped_stream = stream.map(|result| {
+                                result.map_err(|minio_err| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        minio_err.to_string(),
+                                    )
+                                })
+                            });
+
+                            let body = Body::from_stream(mapped_stream);
+
+                            let mut builder = Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_LENGTH, total_size)
+                                .header("X-Processing-Mode", "NORMAL")
+                                .header(
+                                    header::CONTENT_DISPOSITION,
+                                    format!("attachment, filename=\"{}\"", query_meta.key),
+                                );
+
+                            if let Some(ref last_modified) = metadata.last_modified {
+                                builder = builder.header(
+                                    header::LAST_MODIFIED,
+                                    last_modified
+                                        .format("%a, %d %b %Y %H:%M:%S GMT")
+                                        .to_string(),
+                                );
+                            }
+
+                            if metadata.etag.is_some() {
+                                builder =
+                                    builder.header(header::IF_NONE_MATCH, metadata.etag.unwrap());
+                            }
+
+                            builder
+                                .header(header::CONTENT_TYPE, "application/octet-stream")
+                                .body(body)
+                                .unwrap()
+                        }
+                        Err(_) => todo!(),
+                    }
+                }
+                None => return DownloadError::MetadataNotFound.into_response(),
+            },
+            Err(_) => {
+                tracing::info!("Error fetching metadata from DB");
+                return DownloadError::FetchingMetadataError.into_response();
+            }
+        }
+    } else {
+        match download_proxy_handler(
+            &state.saas_storage,
+            &query_meta.bucket_name,
+            &query_meta.key,
+        )
+        .await
+        {
+            Ok((stream, total_size)) => {
+                let mapped_stream = stream.map(|result| {
+                    result.map_err(|minio_err| {
+                        std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
+                    })
+                });
+
+                // let body = Body::from_stream(mapped_stream);
+                let (client_tx, client_rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
+
+                let (cache_tx, mut cache_rx) = mpsc::channel::<Bytes>(32);
+                let (checksum_tx, mut checksum_rx) = oneshot::channel::<String>();
+
+                let query_key = query_meta.key.to_owned();
+                let bucket_name = query_meta.bucket_name.to_owned();
+
+                let mut hasher = Sha256::new();
+                let mut collected: Vec<Bytes> = Vec::new();
+                let mut stream = mapped_stream;
+                let state_one = state.clone();
+
+                tokio::spawn(async move {
+                    let mut parts: Vec<Bytes> = Vec::new();
+
+                    while let Some(chunk) = cache_rx.recv().await {
+                        parts.push(chunk);
+                    }
+
+                    let checksum = match checksum_rx.await {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+
+                    let checksum = upload_stream(
+                        &state_one.proxy_state.as_ref().unwrap().storage,
+                        &bucket_name,
+                        &query_key,
+                        parts,
+                    )
+                    .await
+                    .unwrap();
+
+                    let url = format!("{}/{}", &bucket_name, &query_key);
+
+                    ArtifactMetadataRepository::upsert(
+                        &state_one.proxy_state.as_ref().unwrap().db,
+                        &url,
+                        &checksum,
+                        &checksum,
+                    )
+                    .await
+                    .unwrap();
+                });
+
+                let state_two = state.clone();
+                tokio::spawn(async move {
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(bytes) => {
+                                let _ = cache_tx.send(bytes.clone()).await;
+
+                                let _ = client_tx.send(Ok(bytes)).await;
+                            }
+                            Err(e) => {
+                                let _ = client_tx
+                                    .send(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                });
+
+                let stream = ReceiverStream::new(client_rx);
+                let body = Body::from_stream(stream);
+
+                let mut builder = Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_LENGTH, total_size)
+                    .header("X-Processing-Mode", "PASSTHROUGH")
+                    .header(
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment, filename=\"{}\"", query_meta.key),
+                    );
+
+                builder
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .body(body)
+                    .unwrap()
+            }
+            Err(_) => todo!(),
+        }
+    }
+}
+
+// async fn write_to_cache(
+//     cache_client: &MinioClient,
+//     bucket_name: String,
+//     key: String,
+//     data: Bytes
+// )
+
+pub async fn serve_from_cache(
+    cache_client: &MinioClient,
+    bucket_name: String,
+    key: String,
+) -> Response {
+    match download_proxy_handler(cache_client, &bucket_name, &key).await {
         Ok((stream, total_size)) => {
             let mapped_stream = stream.map(|result| {
                 result.map_err(|minio_err| {
@@ -99,13 +350,29 @@ pub async fn download_handler(
 
             let body = Body::from_stream(mapped_stream);
 
-            Response::builder()
+            let mut builder = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_LENGTH, total_size)
+                .header("X-Processing-Mode", "PASSTHROUGH")
                 .header(
                     header::CONTENT_DISPOSITION,
-                    format!("attachment, filename=\"{}\"", object_name),
-                )
+                    format!("attachment, filename=\"{}\"", key),
+                );
+
+            // if let Some(ref last_modified) = metadata.last_modified {
+            //     builder = builder.header(
+            //         header::LAST_MODIFIED,
+            //         last_modified
+            //             .format("%a, %d %b %Y %H:%M:%S GMT")
+            //             .to_string(),
+            //     );
+            // }
+
+            // if metadata.etag.is_some() {
+            //     builder = builder.header(header::IF_NONE_MATCH, metadata.etag.unwrap());
+            // }
+
+            builder
                 .header(header::CONTENT_TYPE, "application/octet-stream")
                 .body(body)
                 .unwrap()
@@ -135,7 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_upload_stream_single_chunk() {
-        let client = shared::s3_client::init_s3_client().await;
+        let client = shared::s3_client::init_s3_client().await.unwrap();
         let bucket = "test-bucket";
         let object = "single-chunk.bin";
 
@@ -173,16 +440,25 @@ mod tests {
     }
 
     async fn test_state() -> AppState {
-        AppState {
-            auth_service: AuthService::new(),
-            db: shared::db::init_pool(
-                &var("DATABASE_URL")
-                    .expect("DATABASE_URL has not been set")
-                    .to_string(),
-            )
-            .await,
-            storage: shared::s3_client::init_s3_client().await,
-        }
+        let mut is_passthrough_state = false;
+        let db = match shared::db::init_pool(&var("DATABASE_URL").unwrap().to_string()).await {
+            Ok(client) => Some(client),
+            Err(_) => {
+                tracing::error!("Error initing DATABASE client");
+                is_passthrough_state = true;
+
+                None
+            }
+        };
+
+        let storage = match shared::s3_client::init_s3_client().await {
+            Ok(client) => Some(client),
+            Err(_) => {
+                tracing::error!("Error initing minio client");
+                None
+            }
+        };
+        AppState::init().await.unwrap()
     }
 
     #[tokio::test]
@@ -190,7 +466,19 @@ mod tests {
         dotenvy::dotenv().ok();
         let state = Arc::new(test_state().await);
 
-        ensure_bucket(&state.storage, "test-bucket").await;
+        let mut is_passthrough_state = false;
+
+        let storage = match shared::s3_client::init_s3_client().await {
+            Ok(client) => Some(client),
+            Err(_) => {
+                tracing::error!("Error initing minio client");
+                is_passthrough_state = true;
+
+                None
+            }
+        };
+
+        ensure_bucket(&state.saas_storage, "test-bucket").await;
 
         let payload = b"integration test payload";
         let app = create_router(state);
