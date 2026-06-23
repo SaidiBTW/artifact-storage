@@ -230,6 +230,7 @@ pub async fn download_proxy_handler(
     Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>,
     u64,
 )> {
+    tracing::info!("{bucket_name}/{object_name} => Fetching object");
     let get_res = client
         .get_object(bucket_name, object_name)
         .unwrap()

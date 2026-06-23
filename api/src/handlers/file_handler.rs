@@ -78,34 +78,37 @@ pub async fn upload_handler(
                 is_passthrough: state.should_passthrough.to_owned(),
             };
 
-            // tracing::info!("Saving file to db");
-            // let result = ArtifactMetadataRepository::upsert(
-            //     &state.db.as_ref().unwrap(),
-            //     &format!("{}/{}", &success_dto.bucket, success_dto.object_name),
-            //     &checksum,
-            //     &checksum,
-            // )
-            // .await;
+            // if !state.should_passthrough.to_owned() {
+            //     // let state = Arc::clone(&state);
+            //     // tracing::info!("Saving file to db");
+            //     // let result = ArtifactMetadataRepository::upsert(
+            //     //     &state.proxy_state.as_ref().unwrap().db,
+            //     //     &format!("{}/{}", &success_dto.bucket, success_dto.object_name),
+            //     //     &checksum,
+            //     //     &checksum,
+            //     // )
+            //     // .await;
 
-            // match result {
-            //     Ok(result) => {
-            //         return (StatusCode::CREATED, Json(success_dto)).into_response();
-            //     }
-            //     Err(Error::Database(db_err)) => {
-            //         let pg_err = db_err.downcast_ref::<PgDatabaseError>();
-            //         if pg_err.code() == "23505" {
-            //             tracing::error!("Unique vioation for {}", checksum);
-            //             return UploadError::UploadConflict.into_response();
-            //         } else {
-            //             return UploadError::OtherError.into_response();
+            //     match result {
+            //         Ok(result) => {
+            //             return (StatusCode::CREATED, Json(success_dto)).into_response();
             //         }
-            //     }
-            //     Err(e) => {
-            //         return (
-            //             StatusCode::INTERNAL_SERVER_ERROR,
-            //             Json::from("Error Unique violation constraint"),
-            //         )
-            //             .into_response();
+            //         Err(Error::Database(db_err)) => {
+            //             let pg_err = db_err.downcast_ref::<PgDatabaseError>();
+            //             if pg_err.code() == "23505" {
+            //                 tracing::error!("Unique vioation for {}", checksum);
+            //                 return UploadError::UploadConflict.into_response();
+            //             } else {
+            //                 return UploadError::OtherError.into_response();
+            //             }
+            //         }
+            //         Err(e) => {
+            //             return (
+            //                 StatusCode::INTERNAL_SERVER_ERROR,
+            //                 Json::from("Error Unique violation constraint"),
+            //             )
+            //                 .into_response();
+            //         }
             //     }
             // }
             return (StatusCode::CREATED, Json(success_dto)).into_response();
@@ -124,6 +127,7 @@ pub async fn download_handler(
     headers: HeaderMap,
 ) -> Response {
     let url = format!("{}/{}", query_meta.bucket_name, query_meta.key);
+    // tracing::info!("Logging");
 
     if !state.should_passthrough {
         let result =
@@ -218,7 +222,125 @@ pub async fn download_handler(
                         Err(_) => todo!(),
                     }
                 }
-                None => return DownloadError::MetadataNotFound.into_response(),
+                None => {
+                    tracing::info!("Did not find artifact metadata. Caching response");
+                    match download_proxy_handler(
+                        &state.saas_storage,
+                        &query_meta.bucket_name,
+                        &query_meta.key,
+                    )
+                    .await
+                    {
+                        Ok((stream, total_size)) => {
+                            let mapped_stream = stream.map(|result| {
+                                result.map_err(|minio_err| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        minio_err.to_string(),
+                                    )
+                                })
+                            });
+
+                            // let body = Body::from_stream(mapped_stream);
+                            let (client_tx, client_rx) =
+                                mpsc::channel::<Result<Bytes, std::io::Error>>(32);
+
+                            let (cache_tx, mut cache_rx) = mpsc::channel::<Bytes>(32);
+                            let (checksum_tx, mut checksum_rx) = oneshot::channel::<String>();
+
+                            let query_key = query_meta.key.to_owned();
+                            let bucket_name = query_meta.bucket_name.to_owned();
+
+                            let mut stream = mapped_stream;
+                            let state_one = state.clone();
+
+                            tokio::spawn(async move {
+                                let mut parts: Vec<Bytes> = Vec::new();
+
+                                while let Some(chunk) = cache_rx.recv().await {
+                                    parts.push(chunk);
+                                }
+
+                                let checksum = match checksum_rx.await {
+                                    Ok(c) => {
+                                        tracing::info!("Checksum {c}");
+                                        c
+                                    }
+                                    Err(_) => {
+                                        tracing::info!("Failed to receive checksum");
+                                        return;
+                                    }
+                                };
+                                // tracing::info!("Checksum completed {:x}", checksum);
+
+                                upload_stream(
+                                    &state_one.proxy_state.as_ref().unwrap().storage,
+                                    &bucket_name,
+                                    &query_key,
+                                    parts,
+                                )
+                                .await
+                                .unwrap();
+
+                                let url = format!("{}/{}", &bucket_name, &query_key);
+
+                                if let Err(e) = ArtifactMetadataRepository::upsert(
+                                    &state_one.proxy_state.as_ref().unwrap().db,
+                                    &url,
+                                    &checksum,
+                                    &checksum,
+                                )
+                                .await
+                                {
+                                    tracing::error!("Error adding file to proxy state")
+                                }
+                            });
+
+                            tokio::spawn(async move {
+                                let mut hasher = Sha256::new();
+                                while let Some(chunk) = stream.next().await {
+                                    match chunk {
+                                        Ok(bytes) => {
+                                            hasher.update(&bytes);
+                                            let _ = cache_tx.send(bytes.clone()).await;
+
+                                            let _ = client_tx.send(Ok(bytes)).await;
+                                        }
+                                        Err(e) => {
+                                            let _ = client_tx
+                                                .send(Err(std::io::Error::new(
+                                                    std::io::ErrorKind::Other,
+                                                    e,
+                                                )))
+                                                .await;
+                                            return;
+                                        }
+                                    }
+                                }
+                                let hash_result = format!("{:x}", hasher.finalize());
+                                let _ = checksum_tx.send(hash_result);
+                            });
+
+                            let stream = ReceiverStream::new(client_rx);
+                            let body = Body::from_stream(stream);
+
+                            let mut builder = Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_LENGTH, total_size)
+                                .header("X-Processing-Mode", "PASSTHROUGH")
+                                .header(
+                                    header::CONTENT_DISPOSITION,
+                                    format!("attachment, filename=\"{}\"", query_meta.key),
+                                );
+
+                            builder
+                                .header(header::CONTENT_TYPE, "application/octet-stream")
+                                .body(body)
+                                .unwrap()
+                        }
+                        Err(_) => todo!(),
+                    }
+                }
             },
             Err(_) => {
                 tracing::info!("Error fetching metadata from DB");
@@ -249,8 +371,8 @@ pub async fn download_handler(
                 let query_key = query_meta.key.to_owned();
                 let bucket_name = query_meta.bucket_name.to_owned();
 
-                let mut hasher = Sha256::new();
-                let mut collected: Vec<Bytes> = Vec::new();
+                // let mut hasher = Sha256::new();
+                // let mut collected: Vec<Bytes> = Vec::new();
                 let mut stream = mapped_stream;
                 let state_one = state.clone();
 
@@ -262,7 +384,10 @@ pub async fn download_handler(
                     }
 
                     let checksum = match checksum_rx.await {
-                        Ok(c) => c,
+                        Ok(c) => {
+                            tracing::info!("Checksum {c}");
+                            c
+                        }
                         Err(_) => return,
                     };
 
