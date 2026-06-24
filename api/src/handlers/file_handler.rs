@@ -1,13 +1,8 @@
-use axum::body::BodyDataStream;
 use axum::debug_handler;
 use axum::http::HeaderMap;
-use axum_extra::headers;
 use minio::s3::MinioClient;
-use minio::s3::types::S3Api;
 use sha2::{Digest, Sha256};
-use sqlx::Error;
 use sqlx::types::chrono::{DateTime, Utc};
-use sqlx::{error::ErrorKind, postgres::PgDatabaseError};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -15,7 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -26,13 +21,10 @@ use bytes::Bytes;
 use futures::StreamExt;
 
 use shared::repositories::artifact_metadata_repository::ArtifactMetadataRepository;
-use shared::{
-    models::ArtifactMetadata,
-    s3_client::{download_proxy_handler, upload_stream},
-};
+use shared::s3_client::{download_proxy_handler, upload_stream};
 
 use crate::dtos::file_dto::{DownloadRequestDto, UploadRequestDto};
-use crate::types::error::{DownloadError, UploadError};
+use crate::types::error::DownloadError;
 use crate::{dtos::file_dto::UploadSuccessResponseDto, types::app_state::AppState};
 
 // async fn download_handler(State(state): State<Arc<AppState>>, Json(payload): Json<DownloadFileDto>) -> {}
@@ -69,7 +61,7 @@ pub async fn upload_handler(
     )
     .await
     {
-        Ok(checksum) => {
+        Ok(_) => {
             let success_dto = UploadSuccessResponseDto {
                 object_name: metadata.file_name.clone(),
                 bucket: metadata.bucket_name.clone(),

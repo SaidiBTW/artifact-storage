@@ -1,4 +1,4 @@
-use api::{routes::create_router, services::auth_service::AuthService, types::app_state::AppState};
+use api::{routes::create_router, types::app_state::AppState};
 use dotenvy::dotenv;
 use tower_http::{
     classify::{ServerErrorsAsFailures, SharedClassifier},
@@ -7,7 +7,6 @@ use tower_http::{
 };
 
 use std::sync::Arc;
-use std::{env::var, sync::LazyLock};
 use tracing_subscriber::{fmt, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
 #[tokio::main]

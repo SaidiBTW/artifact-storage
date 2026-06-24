@@ -1,5 +1,5 @@
 use axum::body::Body;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::{Stream, StreamExt};
 
 use minio::s3::response_traits::HasS3Fields;
@@ -174,6 +174,7 @@ pub async fn upload_stream(
     object_name: &str,
     chunks: Vec<Bytes>,
 ) -> io::Result<String> {
+    let MINIO_UPLOAD_SIZE = 5 * 1024 * 1024;
     let upload = client
         .create_multipart_upload(bucket_name, object_name)
         .unwrap()
@@ -184,13 +185,43 @@ pub async fn upload_stream(
     let upload_id = upload.upload_id().await.unwrap();
     let mut completed_parts = Vec::new();
     let mut hasher = Sha256::new();
+    let mut buffer = BytesMut::new();
+    let mut part_number = 1;
 
-    for (index, chunk) in chunks.into_iter().enumerate() {
-        let part_number = (index + 1) as u16;
-        let chunk_size = chunk.len();
-
+    for chunk in chunks {
         hasher.update(&chunk);
-        let data = SegmentedBytes::from(chunk);
+        buffer.extend_from_slice(&chunk);
+
+        while buffer.len() >= MINIO_UPLOAD_SIZE {
+            let part_data = buffer.split_to(MINIO_UPLOAD_SIZE).freeze();
+            let chunk_size = part_data.len();
+
+            let data = SegmentedBytes::from(part_data);
+
+            let part_res = client
+                .upload_part(bucket_name, object_name, &upload_id, part_number, data)
+                .unwrap()
+                .build()
+                .send()
+                .await
+                .unwrap();
+
+            completed_parts.push(PartInfo {
+                etag: part_res.etag().unwrap(),
+                number: part_number,
+                size: chunk_size as u64,
+                checksum: None,
+            });
+
+            part_number += 1;
+        }
+    }
+
+    if !buffer.is_empty() || part_number == 1 {
+        let part_data = buffer.freeze();
+        let chunk_size = part_data.len();
+
+        let data = SegmentedBytes::from(part_data);
 
         let part_res = client
             .upload_part(bucket_name, object_name, &upload_id, part_number, data)
