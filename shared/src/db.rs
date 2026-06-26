@@ -1,7 +1,11 @@
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::{Postgres, postgres::PgPoolOptions};
+use sqlx_otel::PoolBuilder;
+
 use std::time::Duration;
 
 use crate::s3_client::AppError;
+
+pub type PgPool = sqlx_otel::Pool<Postgres>;
 
 pub async fn init_pool(database_url: &str) -> Result<PgPool, AppError> {
     let pool = PgPoolOptions::new()
@@ -11,7 +15,16 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, AppError> {
         .await;
 
     match pool {
-        Ok(pool) => Ok(pool),
+        Ok(pool) => {
+            let pool = PoolBuilder::from(pool)
+                .with_database("mydatabase")
+                .with_pool_name("my-metadata-db")
+                .with_query_text_mode(sqlx_otel::QueryTextMode::Obfuscated)
+                .with_pool_metrics_interval(Duration::from_secs(5))
+                .build();
+
+            Ok(pool)
+        }
         Err(error) => {
             println!("{:?}", error);
             tracing::info!("Error reaching postgres");

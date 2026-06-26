@@ -2,7 +2,6 @@ pub mod db;
 pub mod models;
 pub mod repositories;
 pub mod s3_client;
-pub mod sled_impl;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

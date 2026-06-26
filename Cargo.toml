@@ -5,7 +5,7 @@ members = ["api", "shared"]
 [workspace.dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 serde = "1.0.228"
-sqlx = { version = "0.9.0", features = [
+sqlx = { version = "0.8.0", features = [
   "postgres",
   "runtime-tokio",
   "macros",
@@ -17,6 +17,7 @@ tracing-subscriber = { version = "0.3", features = [
   "env-filter",
   "json",
   "local-time",
+  "registry",
 ] }
 dotenvy = "0.15"
 minio = "0.4.0"

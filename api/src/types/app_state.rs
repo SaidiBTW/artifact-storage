@@ -2,8 +2,7 @@ use std::sync::LazyLock;
 
 use dotenvy::var;
 use minio::s3::MinioClient;
-use shared::s3_client::AppError;
-use sqlx::postgres::PgPool;
+use shared::{db::PgPool, s3_client::AppError};
 
 use crate::services::auth_service::AuthService;
 

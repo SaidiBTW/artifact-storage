@@ -2,6 +2,7 @@ use axum::body::Body;
 use bytes::{Bytes, BytesMut};
 use futures_util::{Stream, StreamExt};
 
+use minio::s3::builders::MIN_PART_SIZE;
 use minio::s3::response_traits::HasS3Fields;
 use minio::s3::types::{Part, PartInfo, S3Api};
 use minio::s3::{
@@ -16,7 +17,7 @@ use std::io::{self, Error};
 use std::pin::Pin;
 use std::sync::mpsc;
 
-const MIN_MULTI_PART_SIZE: usize = 5 * 1024 * 1024; //5 MB
+const UPLOAD_MULTI_PART_SIZE: usize = 64 * 1024 * 1024; //64 MB
 pub async fn init_s3_client() -> Result<MinioClient, AppError> {
     tracing::info!("Intiing S3 Client");
     dotenvy::dotenv().ok();
@@ -174,7 +175,6 @@ pub async fn upload_stream(
     object_name: &str,
     chunks: Vec<Bytes>,
 ) -> io::Result<String> {
-    let MINIO_UPLOAD_SIZE = 5 * 1024 * 1024;
     let upload = client
         .create_multipart_upload(bucket_name, object_name)
         .unwrap()
@@ -192,8 +192,8 @@ pub async fn upload_stream(
         hasher.update(&chunk);
         buffer.extend_from_slice(&chunk);
 
-        while buffer.len() >= MINIO_UPLOAD_SIZE {
-            let part_data = buffer.split_to(MINIO_UPLOAD_SIZE).freeze();
+        while buffer.len() >= UPLOAD_MULTI_PART_SIZE {
+            let part_data = buffer.split_to(UPLOAD_MULTI_PART_SIZE).freeze();
             let chunk_size = part_data.len();
 
             let data = SegmentedBytes::from(part_data);

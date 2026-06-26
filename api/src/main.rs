@@ -1,18 +1,36 @@
-use api::{routes::create_router, types::app_state::AppState};
+use api::{
+    routes::create_router,
+    tracing::{TelemetryGuard, init_telemetry},
+    types::app_state::AppState,
+};
 use dotenvy::dotenv;
+use opentelemetry::global::{self, BoxedTracer};
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_sdk::{
+    logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
+};
+use opentelemetry_stdout::{LogExporter, MetricExporter, SpanExporter};
 use tower_http::{
     classify::{ServerErrorsAsFailures, SharedClassifier},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::{DefaultOnRequest, DefaultOnResponse, MakeSpan, TraceLayer},
+    trace::{DefaultOnRequest, DefaultOnResponse, MakeSpan, OnResponse, TraceLayer},
 };
 
-use std::sync::Arc;
+use std::{
+    env,
+    sync::{Arc, OnceLock},
+};
 use tracing_subscriber::{fmt, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    init_tracing();
+    let telemetry_guard = init_telemetry(
+        &env::var("OTEL_SERVICE_NAME").unwrap().to_string(),
+        &env::var("OTEL_EXPORT_OTLP_ENDPOINT").unwrap().to_string(),
+    )
+    .unwrap();
+    // init_tracing();
 
     let app_state = Arc::new(AppState::init().await.unwrap());
 
@@ -32,7 +50,9 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
+    // telemetry_guard.shutdown();
     tokio::signal::ctrl_c().await.unwrap();
+
     tracing::warn!("Shutdown signal received!");
 }
 
@@ -74,11 +94,45 @@ impl<B> MakeSpan<B> for MakeSpanWithRequestId {
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("-");
+        let method = request.method().as_str();
+        let path = request.uri().path();
         tracing::info_span!(
-            "request",
-            methid = %request.method(),
-            path = %request.uri().path(),
+            "HTTP request",
+            otel.name = %format!("{} {}", method, path),
+            http.method = %method,
+            http.route = %path,
+            http.target = %request.uri(),
+            http.scheme = "http",
+            http.response.status_code = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
             request_id = %req_id
+        )
+    }
+}
+
+#[derive(Clone)]
+struct HttpOnResponse;
+
+impl<B> OnResponse<B> for HttpOnResponse {
+    fn on_response(
+        self,
+        response: &axum::http::Response<B>,
+        latency: std::time::Duration,
+        span: &tracing::Span,
+    ) {
+        let status = response.status().as_u16();
+        span.record("http.response.status.code", status as i64);
+
+        if status >= 500 {
+            span.record("otel.status_code", "ERROR");
+        } else {
+            span.record("otel.status_code", "OK");
+        }
+
+        tracing::info!(
+            http.response.status_code = status,
+            latency_ms = latency.as_secs_f64() * 1000.0,
+            "Finished processing request"
         )
     }
 }

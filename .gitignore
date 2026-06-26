@@ -27,3 +27,9 @@ target/
 # Sled database files (if local DB is used during dev)
 *.db
 *.db-journal
+
+# Docker volumes
+minio_data/
+saas_artifacts/
+postgres_data/
+
