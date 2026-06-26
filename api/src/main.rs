@@ -1,10 +1,16 @@
 use api::{
     routes::create_router,
-    tracing::{TelemetryGuard, init_telemetry},
+    telemetry::{
+        init::{TelemetryGuard, init_telemetry},
+        metrics::{HTTP_REQUEST_DURATION, HTTP_REQUESTS_TOTAL},
+    },
     types::app_state::AppState,
 };
 use dotenvy::dotenv;
-use opentelemetry::global::{self, BoxedTracer};
+use opentelemetry::{
+    KeyValue,
+    global::{self, BoxedTracer},
+};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{
     logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
@@ -35,7 +41,11 @@ async fn main() {
     let app_state = Arc::new(AppState::init().await.unwrap());
 
     let app = create_router(app_state)
-        .layer(init_req_tracer())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(MakeSpanWithRequestId)
+                .on_response(HttpOnResponse),
+        )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
 
@@ -54,34 +64,6 @@ async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.unwrap();
 
     tracing::warn!("Shutdown signal received!");
-}
-
-fn init_tracing() {
-    let fmt_layer = fmt::layer()
-        .json()
-        .with_current_span(true)
-        .with_span_list(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_target(false)
-        .with_ansi(false)
-        .with_timer(fmt::time::UtcTime::rfc_3339());
-
-    registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                format!("{}=debug,tpwer_http=info", env!("CARGO_CRATE_NAME")).into()
-            }),
-        )
-        .with(fmt_layer)
-        .init();
-}
-
-fn init_req_tracer()
--> TraceLayer<SharedClassifier<ServerErrorsAsFailures>, MakeSpanWithRequestId, DefaultOnRequest> {
-    TraceLayer::new_for_http()
-        .make_span_with(MakeSpanWithRequestId)
-        .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
 }
 
 #[derive(Clone)]
@@ -121,7 +103,25 @@ impl<B> OnResponse<B> for HttpOnResponse {
         span: &tracing::Span,
     ) {
         let status = response.status().as_u16();
+        let latency = latency.as_secs_f64() * 1000.0;
+        let status_class = format!("{}xx", status / 100);
         span.record("http.response.status.code", status as i64);
+
+        HTTP_REQUESTS_TOTAL.add(
+            1,
+            &[
+                KeyValue::new("http.status_code", status as i64),
+                KeyValue::new("http.status_class", status_class.clone()),
+            ],
+        );
+
+        HTTP_REQUEST_DURATION.record(
+            latency,
+            &[
+                KeyValue::new("http.status_code", status as i64),
+                KeyValue::new("http.status_class", status_class),
+            ],
+        );
 
         if status >= 500 {
             span.record("otel.status_code", "ERROR");
@@ -131,7 +131,7 @@ impl<B> OnResponse<B> for HttpOnResponse {
 
         tracing::info!(
             http.response.status_code = status,
-            latency_ms = latency.as_secs_f64() * 1000.0,
+            latency_ms = latency,
             "Finished processing request"
         )
     }

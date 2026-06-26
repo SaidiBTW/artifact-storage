@@ -24,7 +24,6 @@ impl ArtifactMetadataRepository {
         etag: &str,
         checksum: &str,
     ) -> Result<ArtifactMetadata, sqlx::Error> {
-        tracing::info!("Upsert values");
         sqlx::query_file_as!(
             ArtifactMetadata,
             "queries/artifact_metadata/upsert.sql",

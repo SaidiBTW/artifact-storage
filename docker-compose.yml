@@ -39,6 +39,19 @@ services:
     ports:
       - "8000:9000"
       - "8001:9001"
+  # 2. The OpenTelemetry Collector (Router)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC receiver (if you want to send data from outside docker)
+      - "4318:4318" # OTLP HTTP receiver
+      - "8889:8889" # Prometheus metrics exporter port
+    depends_on:
+      - jaeger
+      - prometheus
   jaeger:
     container_name: jaeger
     image: cr.jaegertracing.io/jaegertracing/jaeger:2.19.0
@@ -51,12 +64,25 @@ services:
     #   - "./jaeger.yml:/etc/jaeger/config.yml"
     ports:
       - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
-      - "14250:14250"
-      - "14268:14268"
-      - "14269:14269"
-      - "9411:9411"
+      - "4317"
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000" # Grafana UI
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    depends_on:
+      - prometheus
+      - jaeger
 
   # otel-collector:
   #   image: otel/opentelemetry-collector-contrib:latest

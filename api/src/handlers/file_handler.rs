@@ -6,6 +6,7 @@ use sqlx::types::chrono::{DateTime, Utc};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 
 use axum::{
     Json,
@@ -23,13 +24,16 @@ use futures::StreamExt;
 use shared::repositories::artifact_metadata_repository::ArtifactMetadataRepository;
 use shared::s3_client::{download_proxy_handler, upload_stream};
 
-use crate::dtos::file_dto::{DownloadRequestDto, UploadRequestDto};
 use crate::types::error::DownloadError;
 use crate::{dtos::file_dto::UploadSuccessResponseDto, types::app_state::AppState};
+use crate::{
+    dtos::file_dto::{DownloadRequestDto, UploadRequestDto},
+    telemetry::metrics::ARTIFACTS_CREATED,
+};
 
 // async fn download_handler(State(state): State<Arc<AppState>>, Json(payload): Json<DownloadFileDto>) -> {}
 
-#[debug_handler]
+// #[debug_handler]
 pub async fn upload_handler(
     // request: Body,
     State(state): State<Arc<AppState>>,
@@ -69,6 +73,8 @@ pub async fn upload_handler(
                 size_bytes: total_upload_size,
                 is_passthrough: state.should_passthrough.to_owned(),
             };
+
+            ARTIFACTS_CREATED.add(1, &[]);
 
             // if !state.should_passthrough.to_owned() {
             //     // let state = Arc::clone(&state);
@@ -246,72 +252,78 @@ pub async fn download_handler(
                             let mut stream = mapped_stream;
                             let state_one = state.clone();
 
-                            tokio::spawn(async move {
-                                let mut parts: Vec<Bytes> = Vec::new();
+                            tokio::spawn(
+                                async move {
+                                    let mut parts: Vec<Bytes> = Vec::new();
 
-                                while let Some(chunk) = cache_rx.recv().await {
-                                    parts.push(chunk);
-                                }
-
-                                let checksum = match checksum_rx.await {
-                                    Ok(c) => {
-                                        tracing::info!("Checksum {c}");
-                                        c
+                                    while let Some(chunk) = cache_rx.recv().await {
+                                        parts.push(chunk);
                                     }
-                                    Err(_) => {
-                                        tracing::info!("Failed to receive checksum");
-                                        return;
-                                    }
-                                };
-                                // tracing::info!("Checksum completed {:x}", checksum);
 
-                                upload_stream(
-                                    &state_one.proxy_state.as_ref().unwrap().storage,
-                                    &bucket_name,
-                                    &query_key,
-                                    parts,
-                                )
-                                .await
-                                .unwrap();
-
-                                let url = format!("{}/{}", &bucket_name, &query_key);
-
-                                if let Err(e) = ArtifactMetadataRepository::upsert(
-                                    &state_one.proxy_state.as_ref().unwrap().db,
-                                    &url,
-                                    &checksum,
-                                    &checksum,
-                                )
-                                .await
-                                {
-                                    tracing::error!("Error adding file to proxy state")
-                                }
-                            });
-
-                            tokio::spawn(async move {
-                                let mut hasher = Sha256::new();
-                                while let Some(chunk) = stream.next().await {
-                                    match chunk {
-                                        Ok(bytes) => {
-                                            hasher.update(&bytes);
-                                            let _ = cache_tx.send(bytes.clone()).await;
-
-                                            let _ = client_tx.send(Ok(bytes)).await;
+                                    let checksum = match checksum_rx.await {
+                                        Ok(c) => {
+                                            tracing::info!("Checksum {c}");
+                                            c
                                         }
-                                        Err(e) => {
-                                            let _ = client_tx
-                                                .send(Err(std::io::Error::new(
-                                                    std::io::ErrorKind::Other,
-                                                    e,
-                                                )))
-                                                .await;
+                                        Err(_) => {
+                                            tracing::info!("Failed to receive checksum");
                                             return;
                                         }
+                                    };
+                                    // tracing::info!("Checksum completed {:x}", checksum);
+
+                                    upload_stream(
+                                        &state_one.proxy_state.as_ref().unwrap().storage,
+                                        &bucket_name,
+                                        &query_key,
+                                        parts,
+                                    )
+                                    .await
+                                    .unwrap();
+
+                                    let url = format!("{}/{}", &bucket_name, &query_key);
+
+                                    if let Err(e) = ArtifactMetadataRepository::upsert(
+                                        &state_one.proxy_state.as_ref().unwrap().db,
+                                        &url,
+                                        &checksum,
+                                        &checksum,
+                                    )
+                                    .await
+                                    {
+                                        tracing::error!("Error adding file to proxy state")
                                     }
                                 }
-                                let hash_result = format!("{:x}", hasher.finalize());
-                                let _ = checksum_tx.send(hash_result);
-                            });
+                                .in_current_span(),
+                            );
+
+                            tokio::spawn(
+                                async move {
+                                    let mut hasher = Sha256::new();
+                                    while let Some(chunk) = stream.next().await {
+                                        match chunk {
+                                            Ok(bytes) => {
+                                                hasher.update(&bytes);
+                                                let _ = cache_tx.send(bytes.clone()).await;
+
+                                                let _ = client_tx.send(Ok(bytes)).await;
+                                            }
+                                            Err(e) => {
+                                                let _ = client_tx
+                                                    .send(Err(std::io::Error::new(
+                                                        std::io::ErrorKind::Other,
+                                                        e,
+                                                    )))
+                                                    .await;
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    let hash_result = format!("{:x}", hasher.finalize());
+                                    let _ = checksum_tx.send(hash_result);
+                                }
+                                .in_current_span(),
+                            );
 
                             let stream = ReceiverStream::new(client_rx);
                             let body = Body::from_stream(stream);
