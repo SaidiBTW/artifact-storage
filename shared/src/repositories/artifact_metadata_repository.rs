@@ -4,7 +4,12 @@ use tracing::instrument;
 pub struct ArtifactMetadataRepository;
 
 impl ArtifactMetadataRepository {
-    #[instrument(name = "db.artifact_metadata.find_artifact_metadata_by_url")]
+    #[instrument(name = "db.artifact_metadata.find_artifact_metadata_by_url",
+        fields(
+            db.system = "postgresql",
+            db.operation = "SELECT",
+            artifact.url = %url
+        ))]
     pub async fn find_by_url(
         pool: &PgPool,
         url: &str,
@@ -17,7 +22,11 @@ impl ArtifactMetadataRepository {
         .fetch_optional(pool)
         .await
     }
-    #[instrument(name = "db.artifact_metadata.upsert")]
+    #[instrument(name = "db.artifact_metadata.upsert", fields(
+        db.system = "postgresql",
+        db.operation = "INSERT",
+        artifact.url = %url
+    ))]
     pub async fn upsert(
         pool: &PgPool,
         url: &str,

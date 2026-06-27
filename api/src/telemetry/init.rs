@@ -1,32 +1,27 @@
-use std::{io, net::IpAddr, sync::OnceLock, time::Duration};
+use std::{sync::OnceLock, time::Duration};
 
 use anyhow::Ok;
 use opentelemetry::{
     KeyValue,
     global::{self, BoxedTracer},
-    metrics::MeterProvider,
 };
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
-    Resource,
-    logs::{SdkLoggerProvider, SimpleLogProcessor},
-    metrics::SdkMeterProvider,
-    trace::{BatchConfigBuilder, SdkTracerProvider},
+    Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
 };
 use opentelemetry_stdout::LogExporter;
-use tower_http::trace;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{
     EnvFilter,
-    fmt::{self, layer},
+    fmt::{self},
     layer::SubscriberExt,
     util::SubscriberInitExt,
 };
 
 pub struct TelemetryGuard {
     pub tracer_provider: SdkTracerProvider,
-    pub logger_provider: SdkLoggerProvider,
+    // pub logger_provider: SdkLoggerProvider,
     pub metrics_provider: SdkMeterProvider,
 }
 
@@ -35,9 +30,9 @@ impl TelemetryGuard {
         if let Err(e) = self.tracer_provider.shutdown() {
             eprintln!("Error shutting down tracer provider: {e}")
         }
-        if let Err(e) = self.logger_provider.shutdown() {
-            eprintln!("Error shutting down logger provider: {e}")
-        }
+        // if let Err(e) = self.logger_provider.shutdown() {
+        //     eprintln!("Error shutting down logger provider: {e}")
+        // }
         if let Err(e) = self.metrics_provider.shutdown() {
             eprintln!("Error shutting down metrics provider {e}")
         }
@@ -69,10 +64,10 @@ pub fn init_telemetry(service_name: &str, otlp_endpoint: &str) -> anyhow::Result
     //     .with_timeout(Duration::from_secs(10))
     //     .build()?;
 
-    let logger_provider = SdkLoggerProvider::builder()
-        .with_simple_exporter(LogExporter::default())
-        .with_resource(resource.clone())
-        .build();
+    // let logger_provider = SdkLoggerProvider::builder()
+    //     .with_simple_exporter(LogExporter::default())
+    //     .with_resource(resource.clone())
+    //     .build();
 
     let meter_export = MetricExporter::builder()
         .with_tonic()
@@ -87,7 +82,7 @@ pub fn init_telemetry(service_name: &str, otlp_endpoint: &str) -> anyhow::Result
 
     global::set_meter_provider(meter_provider.clone());
 
-    let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+    // let otel_log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
     let tracer = global::tracer(service_name.to_string());
     let telemetry_layer = OpenTelemetryLayer::new(tracer);
 
@@ -101,7 +96,7 @@ pub fn init_telemetry(service_name: &str, otlp_endpoint: &str) -> anyhow::Result
     tracing_subscriber::registry()
         .with(env_filter)
         .with(telemetry_layer)
-        .with(otel_log_layer)
+        // .with(otel_log_layer)
         .with(fmt_layer)
         .init();
 
@@ -113,7 +108,7 @@ pub fn init_telemetry(service_name: &str, otlp_endpoint: &str) -> anyhow::Result
 
     Ok(TelemetryGuard {
         tracer_provider,
-        logger_provider,
+        // logger_provider,
         metrics_provider: meter_provider,
     })
 }

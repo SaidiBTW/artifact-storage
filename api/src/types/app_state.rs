@@ -17,6 +17,8 @@ pub struct Config {
     pub database_url: String,
     pub minio_url: String,
     pub minio_saas_url: String,
+    pub otel_service_name: String,
+    pub otel_exporter_endpoint: String,
 }
 
 impl Config {
@@ -26,6 +28,11 @@ impl Config {
             database_url: var("DATABASE_URL").unwrap().to_string().to_owned(),
             minio_url: var("MINIO_URL").unwrap().to_string().to_owned(),
             minio_saas_url: var("MINIO_SAAS_URL").unwrap().to_string().to_owned(),
+            otel_service_name: var("OTEL_SERVICE_NAME").unwrap().to_string().to_owned(),
+            otel_exporter_endpoint: var("OTEL_EXPORT_OTLP_ENDPOINT")
+                .unwrap()
+                .to_string()
+                .to_owned(),
         };
     }
 }
