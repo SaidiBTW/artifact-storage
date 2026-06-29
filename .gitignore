@@ -28,8 +28,14 @@ target/
 *.db
 *.db-journal
 
+# Test files
+test_files/
 # Docker volumes
-minio_data/
-saas_artifacts/
-postgres_data/
+volume_data/
+
+#Disable garage as it is still in development
+garage/
+
+#Python environment
+.venv/
 

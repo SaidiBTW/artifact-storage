@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE}
     container_name: postgres
     restart: unless-stopped
     environment:
@@ -10,10 +10,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - ./postgresql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./volume_data/postgres_data:/var/lib/postgresql/data
 
   minio:
-    image: minio/minio
+    image: ${MINIO_IMAGE}
     container_name: my_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -24,15 +25,15 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - ./minio_data:/data
+      - ./volume_data/minio_data:/data
 
   minio_saas:
-    image: minio/minio
+    image: ${MINIO_IMAGE}
     container_name: minio_saas
     restart: unless-stopped
     command: server /data --console-address ":9001"
     volumes:
-      - ./saas_artifacts:/data
+      - ./volume_data/saas_artifacts:/data
     environment:
       MINIO_ROOT_USER: miniosaas
       MINIO_ROOT_PASSWORD: miniosaaspassword
@@ -41,10 +42,11 @@ services:
       - "8001:9001"
   # 2. The OpenTelemetry Collector (Router)
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.154.0
+    container_name: otel-collector
+    image: ${COLLECTOR_CONTRIB_IMAGE}
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
       - "4317:4317" # OTLP gRPC receiver (if you want to send data from outside docker)
       - "4318:4318" # OTLP HTTP receiver
@@ -54,7 +56,7 @@ services:
       - prometheus
   jaeger:
     container_name: jaeger
-    image: cr.jaegertracing.io/jaegertracing/jaeger:2.19.0
+    image: ${JAEGERTRACING_IMAGE}
     restart: unless-stopped
 
     environment:
@@ -66,53 +68,24 @@ services:
       - "16686:16686"
       - "4317"
   prometheus:
+    image: ${PROMETHEUS_IMAGE}
     container_name: prometheus
-    image: prom/prometheus:latest
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
     volumes:
-      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
   grafana:
-    image: grafana/grafana:latest
+    image: ${GRAFANA_IMAGE}
+    container_name: grafana
     ports:
       - "3001:3000" # Grafana UI
     volumes:
-      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./grafana/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
     depends_on:
       - prometheus
       - jaeger
-
-  # otel-collector:
-  #   image: otel/opentelemetry-collector-contrib:latest
-  #   container_name: otel-collector
-  #   # The contrib image expects the config at /etc/otelcol-contrib/config.yaml
-  #   command: ["--config=/etc/otelcol-contrib/config.yaml"]
-  #   volumes:
-  #     - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-  #   ports:
-  #     - "4317:4317" # OTLP gRPC receiver
-  #     - "4318:4318" # OTLP HTTP receiver
-  #   restart: unless-stopped
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   container_name: prometheus
-  #   volumes:
-  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-  #   ports:
-  #     - "9090:9090" # Prometheus Web UI
-  #   depends_on:
-  #     - otel-collector
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   container_name: grafana
-  #   ports:
-  #     - "3001:3000" # Grafana Web UI (Login: admin / admin)
-  #   environment:
-  #     - GF_SECURITY_ADMIN_PASSWORD=admin
-  #   depends_on:
-  #     - prometheus
 
 volumes:
   postgres_data:

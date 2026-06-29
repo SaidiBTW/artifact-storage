@@ -327,7 +327,7 @@ pub async fn serve_from_cache(
             let body = Body::from_stream(mapped_stream);
 
             let mut builder = Response::builder()
-                .status(StatusCode::OK)
+                .status(StatusCode::NOT_MODIFIED)
                 .header(header::CONTENT_LENGTH, total_size)
                 .header("X-Processing-Mode", "NORMAL")
                 .header(
