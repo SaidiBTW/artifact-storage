@@ -50,6 +50,7 @@ impl IntoResponse for UploadError {
 }
 
 pub enum DownloadError {
+    FetchingS3MetadataError,
     FetchingMetadataError,
     MetadataNotFound,
     NotModified,
@@ -63,6 +64,9 @@ impl IntoResponse for DownloadError {
             }
             DownloadError::MetadataNotFound => (StatusCode::NOT_FOUND, "Metadata not found"),
             DownloadError::NotModified => (StatusCode::NOT_MODIFIED, "Not modified"),
+            DownloadError::FetchingS3MetadataError => {
+                (StatusCode::NOT_FOUND, "Metadata not found in s3")
+            }
         };
 
         let body = Json(serde_json::json!({

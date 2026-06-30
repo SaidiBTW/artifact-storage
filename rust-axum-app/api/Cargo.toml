@@ -45,3 +45,4 @@ opentelemetry-otlp = { version = "0.32.0", features = [
 tracing-opentelemetry = "0.33"
 
 anyhow = "1.0.103"
+md5 = { workspace = true }

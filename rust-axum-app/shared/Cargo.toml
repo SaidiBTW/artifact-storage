@@ -20,3 +20,4 @@ bytes = { workspace = true }
 sha2 = { workspace = true }
 sqlx-otel = { features = ["postgres", "runtime-tokio"], version = "0.3.0" }
 anyhow = "1.0.103"
+md5 = { workspace = true }

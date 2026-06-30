@@ -1,15 +1,14 @@
-use axum::body::Body;
 use bytes::{Bytes, BytesMut};
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 
-use minio::s3::builders::MIN_PART_SIZE;
-use minio::s3::response_traits::HasS3Fields;
-use minio::s3::types::{Part, PartInfo, S3Api};
+use minio::s3::types::{ETag, PartInfo, S3Api};
+use minio::s3::utils::UtcTime;
 use minio::s3::{
     MinioClient, creds::StaticProvider, http::BaseUrl, response_traits::HasEtagFromHeaders,
     segmented_bytes::SegmentedBytes,
 };
 use sha2::{Digest, Sha256};
+use sqlx::types::chrono::Utc;
 use std::env::var;
 use std::fs::File;
 use std::io::Write;
@@ -151,24 +150,6 @@ pub async fn verify_and_setup_storage(client: &minio::s3::client::MinioClient) {
         tracing::info!("Bucket created successfully");
     }
 }
-
-// pub async fn download_stream(
-//     client: &MinioClient,
-//     bucket_name: &str,
-//     object_name: &str,
-// ) -> Result<Response, StatusCode> {
-//     let response = client
-//         .get_object(bucket_name, object_name)
-//         .unwrap()
-//         .build()
-//         .send()
-//         .await
-//         .unwrap()
-//         .request();
-
-//     let stream = ReaderStream::new(response.)
-// }
-
 pub async fn upload_stream(
     client: &MinioClient,
     bucket_name: &str,
@@ -183,19 +164,19 @@ pub async fn upload_stream(
         .await
         .unwrap();
     let upload_id = upload.upload_id().await.unwrap();
+    let mut combined_hashes = Vec::new();
     let mut completed_parts = Vec::new();
-    let mut hasher = Sha256::new();
     let mut buffer = BytesMut::new();
     let mut part_number = 1;
 
     for chunk in chunks {
-        hasher.update(&chunk);
         buffer.extend_from_slice(&chunk);
 
         while buffer.len() >= UPLOAD_MULTI_PART_SIZE {
             let part_data = buffer.split_to(UPLOAD_MULTI_PART_SIZE).freeze();
             let chunk_size = part_data.len();
 
+            let digest = md5::compute(&part_data);
             let data = SegmentedBytes::from(part_data);
 
             let part_res = client
@@ -213,6 +194,8 @@ pub async fn upload_stream(
                 checksum: None,
             });
 
+            combined_hashes.extend_from_slice(&digest.0);
+
             part_number += 1;
         }
     }
@@ -221,8 +204,8 @@ pub async fn upload_stream(
         let part_data = buffer.freeze();
         let chunk_size = part_data.len();
 
+        let digest = md5::compute(&part_data);
         let data = SegmentedBytes::from(part_data);
-
         let part_res = client
             .upload_part(bucket_name, object_name, &upload_id, part_number, data)
             .unwrap()
@@ -230,6 +213,8 @@ pub async fn upload_stream(
             .send()
             .await
             .unwrap();
+
+        combined_hashes.extend_from_slice(&digest.0);
 
         completed_parts.push(PartInfo {
             etag: part_res.etag().unwrap(),
@@ -247,10 +232,12 @@ pub async fn upload_stream(
         .await
         .unwrap();
 
-    let checksum = format!("{:x}", hasher.finalize());
+    let final_digest = md5::compute(combined_hashes);
 
-    tracing::info!("Uploaded {} - SHA256: {}", object_name, checksum);
-    Ok(checksum)
+    let value = format!("{:x}-{}", final_digest, part_number);
+
+    tracing::info!("Uploaded {} - MD5: {}", object_name, value);
+    Ok(value)
 }
 
 pub async fn download_proxy_handler(
@@ -270,35 +257,7 @@ pub async fn download_proxy_handler(
         .await
         .unwrap();
 
-    // let mut downloaded_bytes = 0;
     let (stream, size) = get_res.into_boxed_stream().unwrap();
-
-    // let mapped_stream = stream.map(|result| {
-    //     result.map_err(|minio_err| {
-    //         std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
-    //     })
-    // });
-    // let body = Body::from_stream(mapped_stream);
-
-    // let mapped_stream = byte_stream.map(|result| {
-    //     result.map_err(|minio_err| {
-    //         std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
-    //     })
-    // });
-
-    // tracing::info!("Starting download of the file");
-
-    // while let Some(chunk_result) = byte_stream.next().await {
-    //     let chunk = chunk_result?;
-
-    //     file.write_all(&chunk)?;
-
-    //     downloaded_bytes += chunk.len() as u64;
-
-    //     tracing::info!("Progress: {}/{} bytes", downloaded_bytes, total_size);
-    // }
-
-    // tracing::info!("Download Completed");
 
     Ok((stream, size))
 }
@@ -322,10 +281,43 @@ pub async fn ensure_bucket(client: &MinioClient, bucket_name: &str) {
     }
 }
 
+pub async fn fetch_object_metadata(
+    client: &MinioClient,
+    bucket_name: String,
+    file_name: String,
+) -> Result<S3Metadata, AppError> {
+    let object = client
+        .stat_object(bucket_name, file_name)
+        .unwrap()
+        .build()
+        .send()
+        .await;
+    tracing::info!("Response metadata gotten back {:?}", object);
+
+    match object {
+        Ok(object) => {
+            return Ok(S3Metadata {
+                size: object.size().unwrap(),
+                etag: object.etag().unwrap().to_string(),
+                last_modified: object.last_modified().unwrap(),
+            });
+        }
+        Err(e) => Err(AppError::S3MetadataNotFound),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct S3Metadata {
+    pub size: u64,
+    pub etag: String,
+    pub last_modified: Option<UtcTime>,
+}
+
 #[derive(Debug)]
 pub enum AppError {
     DatabaseTimeout,
     MinioTimeout,
     ProxyError,
     SaasS3Error,
+    S3MetadataNotFound,
 }

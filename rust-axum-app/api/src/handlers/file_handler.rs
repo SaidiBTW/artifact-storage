@@ -3,6 +3,7 @@ use minio::s3::MinioClient;
 use opentelemetry::KeyValue;
 use sha2::Digest;
 use sha2::Sha256;
+use shared::s3_client::fetch_object_metadata;
 use sqlx::types::chrono::DateTime;
 use sqlx::types::chrono::Utc;
 use std::sync::Arc;
@@ -129,75 +130,83 @@ pub async fn download_handler(
     Query(query_meta): Query<DownloadRequestDto>,
     headers: HeaderMap,
 ) -> Response {
-    let url = format!("{}/{}", query_meta.bucket_name, query_meta.key);
+    let url = format!(
+        "{}/{}",
+        query_meta.bucket_name.clone(),
+        query_meta.file_name.clone()
+    );
     // tracing::info!("Logging");
+    let metadata = fetch_object_metadata(
+        &state.saas_storage,
+        query_meta.bucket_name.clone().to_string(),
+        query_meta.file_name.clone().to_string(),
+    )
+    .await;
 
     if !state.should_passthrough {
-        let result =
-            ArtifactMetadataRepository::find_by_url(&&state.proxy_state.as_ref().unwrap().db, &url)
-                .await;
+        if let Ok(s3_metadata) = metadata {
+            let result = ArtifactMetadataRepository::find_by_url(
+                &&state.proxy_state.as_ref().unwrap().db,
+                &url,
+            )
+            .await;
 
-        let cache_client = &state.proxy_state.as_ref().unwrap().storage;
+            let cache_client = &state.proxy_state.as_ref().unwrap().storage;
 
-        match result {
-            Ok(db_result) => match db_result {
-                Some(metadata) => {
-                    //Evaluate IF-NONE_MATCH header
-                    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
-                        let client_etag = if_none_match.to_str().unwrap_or("");
-                        if let Some(ref etag) = metadata.etag {
-                            let is_match = client_etag == "*" || etag == client_etag;
+            match result {
+                Ok(db_result) => match db_result {
+                    Some(metadata) => {
+                        let _metadata = metadata.clone();
+                        //Evaluate etag field
+                        let saas_etag = s3_metadata.etag;
+                        let saas_last_modified = s3_metadata.last_modified.unwrap().timestamp();
 
-                            if is_match {
-                                tracing::error!("Not modified since last pull");
-                                return DownloadError::NotModified.into_response();
-                            }
+                        let proxy_etag = _metadata.etag.unwrap_or_else(|| {
+                            tracing::info!("Error fetching etag");
+                            return String::from("");
+                        });
+
+                        let proxy_last_modified = _metadata.last_modified.unwrap().timestamp();
+
+                        //This shows that the proxy and saas have not gone out of sync
+                        let is_match = (saas_etag == "*" || saas_etag == proxy_etag)
+                            && (proxy_last_modified >= saas_last_modified);
+
+                        if is_match {
+                            tracing::info!("Cache found in proxy, pulling from cache");
+                            return serve_from_cache(&cache_client, query_meta, metadata).await;
+                        } else {
+                            tracing::info!(
+                                "Cache is out of date or empty. Pull from cache and refresh"
+                            );
+                            return serve_from_saas(state, query_meta).await;
                         }
                     }
-
-                    //Evaluat IF_MODIFIED_SINCE header
-                    if let Some(if_modified_since) = headers.get(header::IF_MODIFIED_SINCE) {
-                        let last_modified = metadata.last_modified;
-
-                        if let Ok(since_str) = if_modified_since.to_str() {
-                            if let Ok(since) = DateTime::parse_from_rfc2822(since_str) {
-                                let since: DateTime<Utc> = since.into();
-                                if let Some(last_modified) = last_modified {
-                                    let last_mod_secs = last_modified.timestamp();
-                                    let since_secs = since.timestamp();
-                                    println!("{:?} Since-{:?}", last_mod_secs, since_secs);
-
-                                    if last_mod_secs <= since_secs {
-                                        return DownloadError::NotModified.into_response();
-                                    }
-                                }
-                            }
-                        }
+                    None => {
+                        tracing::info!("Did not find artifact metadata. Caching response");
+                        return serve_from_saas(state, query_meta).await;
                     }
-                    return serve_from_cache(&cache_client, query_meta, metadata).await;
+                },
+                Err(_) => {
+                    tracing::info!("Error fetching metadata from DB");
+                    return DownloadError::FetchingMetadataError.into_response();
                 }
-                None => {
-                    tracing::info!("Did not find artifact metadata. Caching response");
-                    return server_from_saas(state, query_meta).await;
-                }
-            },
-            Err(_) => {
-                tracing::info!("Error fetching metadata from DB");
-                return DownloadError::FetchingMetadataError.into_response();
             }
+        } else {
+            return DownloadError::FetchingS3MetadataError.into_response();
         }
     } else {
-        server_from_saas(state, query_meta).await
+        serve_from_saas(state, query_meta).await
     }
 }
 
-async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -> Response {
-    CACHE_LOOKUPS.add(1, &[KeyValue::new("cache.hit", true)]);
+async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -> Response {
+    CACHE_LOOKUPS.add(1, &[KeyValue::new("cache.hit", false)]);
 
     match download_proxy_handler(
         &state.saas_storage,
         &query_meta.bucket_name,
-        &query_meta.key,
+        &query_meta.file_name,
     )
     .await
     {
@@ -213,7 +222,7 @@ async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) 
             let (cache_tx, mut cache_rx) = mpsc::channel::<Bytes>(32);
             let (checksum_tx, mut checksum_rx) = oneshot::channel::<String>();
 
-            let query_key = query_meta.key.to_owned();
+            let query_key = query_meta.file_name.to_owned();
             let bucket_name = query_meta.bucket_name.to_owned();
 
             // let mut hasher = Sha256::new();
@@ -240,7 +249,7 @@ async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) 
                         }
                     };
 
-                    upload_stream(
+                    let md5_val = upload_stream(
                         &state_one.proxy_state.as_ref().unwrap().storage,
                         &bucket_name,
                         &query_key,
@@ -254,12 +263,12 @@ async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) 
                     if let Err(e) = ArtifactMetadataRepository::upsert(
                         &state_one.proxy_state.as_ref().unwrap().db,
                         &url,
-                        &checksum,
+                        &md5_val,
                         &checksum,
                     )
                     .await
                     {
-                        tracing::error!("Error adding file to proxy state")
+                        tracing::error!("Error adding file to proxy state {:?}", e)
                     }
                 }
                 .in_current_span(),
@@ -267,10 +276,12 @@ async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) 
             tokio::spawn(
                 async move {
                     let mut hasher = Sha256::new();
+
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(bytes) => {
                                 hasher.update(&bytes);
+
                                 let _ = cache_tx.send(bytes.clone()).await;
 
                                 let _ = client_tx.send(Ok(bytes)).await;
@@ -298,7 +309,7 @@ async fn server_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) 
                 .header("X-Processing-Mode", "PASSTHROUGH")
                 .header(
                     header::CONTENT_DISPOSITION,
-                    format!("attachment, filename=\"{}\"", query_meta.key),
+                    format!("attachment, filename=\"{}\"", query_meta.file_name),
                 );
 
             builder
@@ -315,8 +326,14 @@ pub async fn serve_from_cache(
     query_meta: DownloadRequestDto,
     metadata: ArtifactMetadata,
 ) -> Response {
-    CACHE_LOOKUPS.add(1, &[KeyValue::new("cache.hit", false)]);
-    match download_proxy_handler(&cache_client, &query_meta.bucket_name, &query_meta.key).await {
+    CACHE_LOOKUPS.add(1, &[KeyValue::new("cache.hit", true)]);
+    match download_proxy_handler(
+        &cache_client,
+        &query_meta.bucket_name,
+        &query_meta.file_name,
+    )
+    .await
+    {
         Ok((stream, total_size)) => {
             let mapped_stream = stream.map(|result| {
                 result.map_err(|minio_err| {
@@ -327,12 +344,12 @@ pub async fn serve_from_cache(
             let body = Body::from_stream(mapped_stream);
 
             let mut builder = Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
+                .status(StatusCode::OK)
                 .header(header::CONTENT_LENGTH, total_size)
                 .header("X-Processing-Mode", "NORMAL")
                 .header(
                     header::CONTENT_DISPOSITION,
-                    format!("attachment, filename=\"{}\"", query_meta.key),
+                    format!("attachment, filename=\"{}\"", query_meta.file_name),
                 );
 
             if let Some(ref last_modified) = metadata.last_modified {

@@ -31,12 +31,4 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, AppError> {
             Err(AppError::DatabaseTimeout)
         }
     }
-
-    // Automatically run migrations on startup
-    // sqlx::migrate!()
-    //     .run(&pool)
-    //     .await
-    //     .expect("Failed to run database migrations");
-
-    // Ok(pool)
 }

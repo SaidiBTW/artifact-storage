@@ -32,6 +32,6 @@ impl Default for UploadRequestDto {
 
 #[derive(Deserialize, Debug, Serialize)]
 pub struct DownloadRequestDto {
-    pub key: String,
+    pub file_name: String,
     pub bucket_name: String,
 }
