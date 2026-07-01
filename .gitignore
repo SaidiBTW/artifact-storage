@@ -33,8 +33,7 @@ test_files/
 # Docker volumes
 volume_data/
 
-#Disable garage as it is still in development
-garage/
+
 
 #Python environment
 .venv/
