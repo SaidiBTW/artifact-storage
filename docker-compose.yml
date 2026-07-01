@@ -13,34 +13,63 @@ services:
       - ./postgresql/init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./volume_data/postgres_data:/var/lib/postgresql/data
 
-  minio:
-    image: ${MINIO_IMAGE}
-    container_name: my_minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadminpassword
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+  garage:
+    image: ${GARAGE_IMAGE}
+    container_name: garage
     volumes:
-      - ./volume_data/minio_data:/data
+      - ./garage/garage.toml:/etc/garage.toml
+      - ./volume_data/garage/data:/var/lib/garage/data
+      - ./volume_data/garage/meta:/var/lib/garage/meta
+    command: /garage server --single-node --default-bucket
+    environment:
+      - GARAGE_DEFAULT_ACCESS_KEY
+      - GARAGE_DEFAULT_SECRET_KEY
+      - GARAGE_DEFAULT_BUCKET
+    ports:
+      - "3900:3900"
+      - "3901:3901"
+      - "3902:3902"
+      - "3903:3903"
+  garage_webui:
+    image: ${GARAGE_WEBUI_IMAGE}
+    container_name: garage_webui
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+    ports:
+      - "3909:3909"
 
-  minio_saas:
-    image: ${MINIO_IMAGE}
-    container_name: minio_saas
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    volumes:
-      - ./volume_data/saas_artifacts:/data
     environment:
-      MINIO_ROOT_USER: miniosaas
-      MINIO_ROOT_PASSWORD: miniosaaspassword
+      API_BASE_URL: "http://garage:3903"
+      S3_ENDPOINT_URL: "http://garage:3900"
+
+  garage_saas:
+    image: ${GARAGE_IMAGE}
+    container_name: garage_saas
+    volumes:
+      - ./garage/garage_saas.toml:/etc/garage.toml
+      - ./volume_data/garage_saas/data:/var/lib/garage/data
+      - ./volume_data/garage_saas/meta:/var/lib/garage/meta
+    command: /garage server --single-node --default-bucket
+    environment:
+      - GARAGE_DEFAULT_ACCESS_KEY
+      - GARAGE_DEFAULT_SECRET_KEY
+      - GARAGE_DEFAULT_BUCKET
     ports:
-      - "8000:9000"
-      - "8001:9001"
-  # 2. The OpenTelemetry Collector (Router)
+      - "2900:2900"
+      - "2901:2901"
+      - "2902:2902"
+      - "2903:2903"
+  garage_saas_webui:
+    image: ${GARAGE_WEBUI_IMAGE}
+    container_name: garage_saas_webui
+    volumes:
+      - ./garage/garage_saas.toml:/etc/garage.toml:ro
+    ports:
+      - "2909:3909"
+    environment:
+      API_BASE_URL: "http://garage_saas:2903"
+      S3_ENDPOINT_URL: "http://garage_saas:2900"
+
   load-generator:
     image: ${IMAGE_NAME}:${DEMO_VERSION}-load-generator
     container_name: load-generator
@@ -99,7 +128,3 @@ services:
     depends_on:
       - prometheus
       - jaeger
-
-volumes:
-  postgres_data:
-  minio_data:

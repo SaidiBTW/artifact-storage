@@ -1,7 +1,9 @@
 use bytes::{Bytes, BytesMut};
 use futures_util::Stream;
 
-use minio::s3::types::{ETag, PartInfo, S3Api};
+use minio::s3::MinioClientBuilder;
+use minio::s3::client::DEFAULT_REGION;
+use minio::s3::types::{ETag, PartInfo, Region, S3Api};
 use minio::s3::utils::UtcTime;
 use minio::s3::{
     MinioClient, creds::StaticProvider, http::BaseUrl, response_traits::HasEtagFromHeaders,
@@ -14,18 +16,26 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{self, Error};
 use std::pin::Pin;
-use std::sync::mpsc;
+use std::sync::{LazyLock, mpsc};
 
 const UPLOAD_MULTI_PART_SIZE: usize = 64 * 1024 * 1024; //64 MB
 pub async fn init_s3_client() -> Result<MinioClient, AppError> {
     tracing::info!("Intiing S3 Client");
     dotenvy::dotenv().ok();
-    let base_url = var("MINIO_URL")
+    let base_url = var("GARAGE_URL")
         .expect("Minio URL should be defined")
         .parse::<BaseUrl>()
         .unwrap();
-    let static_provider = StaticProvider::new("minioadmin", "minioadminpassword", None);
-    let client = MinioClient::new(base_url, Some(static_provider), None, None).unwrap();
+    let access_key = var("GARAGE_DEFAULT_ACCESS_KEY").expect("Access key required");
+    let secret = var("GARAGE_DEFAULT_SECRET_KEY").expect("Secret Key Required");
+
+    let static_provider = StaticProvider::new(&access_key, &secret, None);
+    let client = MinioClientBuilder::new(base_url)
+        .provider(Some(static_provider))
+        .ignore_cert_check(None)
+        .skip_region_lookup(true)
+        .build()
+        .unwrap();
 
     match client.list_buckets().build().send().await {
         Ok(_) => {
@@ -54,10 +64,14 @@ pub async fn init_s3_client() -> Result<MinioClient, AppError> {
                     tracing::info!("Cannot connect to server");
                     return Err(AppError::MinioTimeout);
                 }
-                _ => todo!(),
+                _ => {
+                    tracing::info!("Unknown Error : {:?}", s3_server_error);
+                }
             },
-            _ => todo!(), // minio::s3::error::Error::DriveIo(io_error) => todo!(),
-                          // minio::s3::error::Error::Validation(validation_err) => todo!(),
+            _ => {
+                tracing::info!("Unhandled Error: {:?}", err)
+            } // minio::s3::error::Error::DriveIo(io_error) => todo!(),
+              // minio::s3::error::Error::Validation(validation_err) => todo!(),
         },
     };
 
@@ -68,14 +82,22 @@ pub async fn init_saas_s3_client() -> Result<MinioClient, AppError> {
     tracing::info!("Initializaing SAAS Client");
     dotenvy::dotenv().ok();
 
-    let base_url = var("MINIO_SAAS_URL")
+    let base_url = var("GARAGE_SAAS_URL")
         .expect("Minio SAAS Url not defined")
         .parse::<BaseUrl>()
         .unwrap();
+    let access_key = var("GARAGE_DEFAULT_ACCESS_KEY").expect("Access key required");
+    let secret = var("GARAGE_DEFAULT_SECRET_KEY").expect("Secret Key Required");
 
-    let static_provider = StaticProvider::new("miniosaas", "miniosaaspassword", None);
+    let static_provider = StaticProvider::new(&access_key, &secret, None);
+    // DEFAULT_REGION = LazyLock::new(|| Region::new("garage").unwrap());
 
-    let client = MinioClient::new(base_url, Some(static_provider), None, None).unwrap();
+    let client = MinioClientBuilder::new(base_url)
+        .provider(Some(static_provider))
+        .ignore_cert_check(None)
+        .skip_region_lookup(true)
+        .build()
+        .unwrap();
 
     match client.list_buckets().build().send().await {
         Ok(_) => {
@@ -104,7 +126,7 @@ pub async fn init_saas_s3_client() -> Result<MinioClient, AppError> {
                     tracing::info!("Cannot connect to server");
                     return Err(AppError::SaasS3Error);
                 }
-                _ => todo!(),
+                _ => {}
             },
             _ => todo!(),
         },
