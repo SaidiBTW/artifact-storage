@@ -79,5 +79,6 @@ impl IntoResponse for DownloadError {
 
 pub enum AppError {
     DatabaseTimeout,
-    MinioTimeout,
+    S3Timeout,
+    SaasError,
 }

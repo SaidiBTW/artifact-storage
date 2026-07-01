@@ -1,10 +1,10 @@
 use std::sync::LazyLock;
 
+use aws_sdk_s3::Client;
 use axum::{body::Body, response::Response};
 use dashmap::DashMap;
 use dotenvy::var;
-use minio::s3::MinioClient;
-use moka::future::Cache;
+
 use shared::{db::PgPool, s3_client::AppError};
 
 use crate::services::auth_service::AuthService;
@@ -13,14 +13,13 @@ pub struct AppState {
     pub auth_service: AuthService,
     pub proxy_state: Option<ProxyState>,
     pub should_passthrough: bool,
-    pub saas_storage: MinioClient,
+    pub saas_storage: Client,
     pub dashmap: DashMap<String, bool>, // This is a lock to act as a 'Exactly once semantic for caching operations
 }
 
 pub struct Config {
     pub database_url: String,
-    pub minio_url: String,
-    pub minio_saas_url: String,
+
     pub garage_url: String,
     pub garage_saas_url: String,
     pub otel_service_name: String,
@@ -32,9 +31,8 @@ impl Config {
         dotenvy::dotenv().ok();
         return Config {
             database_url: var("DATABASE_URL").unwrap().to_string().to_owned(),
-            minio_url: var("MINIO_URL").unwrap().to_string().to_owned(),
             garage_url: var("GARAGE_URL").unwrap().to_string(),
-            minio_saas_url: var("MINIO_SAAS_URL").unwrap().to_string().to_owned(),
+
             garage_saas_url: var("GARAGE_SAAS_URL").unwrap().to_string(),
             otel_service_name: var("OTEL_SERVICE_NAME").unwrap().to_string().to_owned(),
             otel_exporter_endpoint: var("OTEL_EXPORT_OTLP_ENDPOINT")
@@ -85,6 +83,6 @@ impl AppState {
 }
 
 pub struct ProxyState {
-    pub storage: MinioClient,
+    pub storage: Client,
     pub db: PgPool,
 }

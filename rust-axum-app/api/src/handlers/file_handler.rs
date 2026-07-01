@@ -1,5 +1,6 @@
+use aws_sdk_s3::Client;
 use axum::http::HeaderMap;
-use minio::s3::MinioClient;
+
 use opentelemetry::KeyValue;
 use sha2::Digest;
 use sha2::Sha256;
@@ -8,7 +9,9 @@ use sqlx::types::chrono::DateTime;
 use sqlx::types::chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::io::ReaderStream;
 use tracing::Instrument;
 
 use axum::{
@@ -22,7 +25,6 @@ use axum::{
 use axum_extra::extract::Query;
 
 use bytes::Bytes;
-use futures::StreamExt;
 
 use shared::s3_client::{download_proxy_handler, upload_stream};
 use shared::{
@@ -30,6 +32,7 @@ use shared::{
     repositories::artifact_metadata_repository::ArtifactMetadataRepository,
 };
 
+use crate::types::error::AppError;
 use crate::{dtos::file_dto::UploadSuccessResponseDto, types::app_state::AppState};
 use crate::{
     dtos::file_dto::{DownloadRequestDto, UploadRequestDto},
@@ -159,7 +162,7 @@ pub async fn download_handler(
                         let _metadata = metadata.clone();
                         //Evaluate etag field
                         let saas_etag = s3_metadata.etag;
-                        let saas_last_modified = s3_metadata.last_modified.unwrap().timestamp();
+                        let saas_last_modified = s3_metadata.last_modified.secs();
 
                         let proxy_etag = _metadata.etag.unwrap_or_else(|| {
                             tracing::info!("Error fetching etag");
@@ -187,13 +190,10 @@ pub async fn download_handler(
                         return serve_from_saas(state, query_meta).await;
                     }
                 },
-                Err(_) => {
-                    tracing::info!("Error fetching metadata from DB");
-                    return DownloadError::FetchingMetadataError.into_response();
-                }
+                Err(_) => serve_from_saas(state, query_meta).await,
             }
         } else {
-            return DownloadError::FetchingS3MetadataError.into_response();
+            serve_from_saas(state, query_meta).await
         }
     } else {
         serve_from_saas(state, query_meta).await
@@ -212,13 +212,7 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
     )
     .await
     {
-        Ok((stream, total_size)) => {
-            let mapped_stream = stream.map(|result| {
-                result.map_err(|minio_err| {
-                    std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
-                })
-            });
-
+        Ok((mut stream, total_size)) => {
             let (client_tx, client_rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
 
             let (cache_tx, mut cache_rx) = mpsc::channel::<Bytes>(32);
@@ -229,7 +223,6 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
 
             // let mut hasher = Sha256::new();
             // let mut collected: Vec<Bytes> = Vec::new();
-            let mut stream = mapped_stream;
             let state_one = state.clone();
 
             let url = format!(
@@ -341,12 +334,15 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
                 .body(body)
                 .unwrap()
         }
-        Err(_) => todo!(),
+        Err(e) => {
+            tracing::info!("Erro serving from Saas, {:?}", e);
+            return DownloadError::FetchingMetadataError.into_response();
+        }
     }
 }
 
 pub async fn serve_from_cache(
-    cache_client: &MinioClient,
+    cache_client: &Client,
     query_meta: DownloadRequestDto,
     metadata: ArtifactMetadata,
 ) -> Response {
@@ -359,13 +355,11 @@ pub async fn serve_from_cache(
     .await
     {
         Ok((stream, total_size)) => {
-            let mapped_stream = stream.map(|result| {
-                result.map_err(|minio_err| {
-                    std::io::Error::new(std::io::ErrorKind::Other, minio_err.to_string())
-                })
-            });
+            // let stream = stream.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
+            let async_read = stream.into_async_read();
 
-            let body = Body::from_stream(mapped_stream);
+            let stream = ReaderStream::new(async_read);
+            let body = Body::from_stream(stream);
 
             let mut builder = Response::builder()
                 .status(StatusCode::OK)
@@ -408,7 +402,6 @@ mod tests {
     };
     use bytes::Bytes;
     use dotenvy::var;
-    use minio::s3::types::S3Api;
     use shared::s3_client::{ensure_bucket, upload_stream};
     use tower::ServiceExt;
 
@@ -434,21 +427,16 @@ mod tests {
 
         //Verify Object exists
         let downloaded = client
-            .get_object(bucket, object)
-            .unwrap()
-            .build()
+            .get_object()
+            .bucket(bucket)
+            .key(object)
             .send()
             .await
             .expect("Get object failed");
 
-        let body = downloaded
-            .content()
-            .unwrap()
-            .to_segmented_bytes()
-            .await
-            .unwrap();
+        let body = downloaded.body;
 
-        let received: Bytes = body.to_bytes();
+        let received: Bytes = body.collect().await.unwrap().into_bytes();
 
         assert_eq!(
             received, payload,
