@@ -23,7 +23,7 @@ class MyUser(HttpUser):
         response.success()
     
       else:
-        response.failure(f"File failed with status code {response.status_code}")
+        response.failure(f"File upload failed with status code {response.status_code}")
 
   @task
   def get_download_task(self):
@@ -31,7 +31,20 @@ class MyUser(HttpUser):
       if response.status_code == 200:
         response.success()
       else:
-        response.failure(f"File failed with status code {response.status_code}")
+        response.failure(f"File download failed with status code {response.status_code}")
+  
+
+class TestCacheOnceSemantics(HttpUser):
+  wait_time = constant(1)
+
+  @task
+  def target_api_endpoint(self):
+    with self.client.get("/file/download?file_name=500MB_clean.bin&bucket_name=sample", catch_response=True) as response:
+      if (response.status_code == 200):
+        response.success()
+      else:
+        response.failure(f"Download failed with status code {response.status_code}")
+    
 
 
 

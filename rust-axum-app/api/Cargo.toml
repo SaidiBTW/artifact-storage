@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = { path = "../shared" }
+multiplexer = { path = "../multiplexer" }
 axum = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
@@ -46,3 +47,5 @@ tracing-opentelemetry = "0.33"
 
 anyhow = "1.0.103"
 md5 = { workspace = true }
+moka = { version = "0.12", features = ["future"] }
+dashmap = "6.2.1"

@@ -135,7 +135,7 @@ pub async fn download_handler(
         query_meta.bucket_name.clone(),
         query_meta.file_name.clone()
     );
-    // tracing::info!("Logging");
+
     let metadata = fetch_object_metadata(
         &state.saas_storage,
         query_meta.bucket_name.clone().to_string(),
@@ -198,6 +198,8 @@ pub async fn download_handler(
     } else {
         serve_from_saas(state, query_meta).await
     }
+
+    // tracing::info!("Logging");
 }
 
 async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -> Response {
@@ -230,46 +232,68 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
             let mut stream = mapped_stream;
             let state_one = state.clone();
 
+            let url = format!(
+                "{}/{}",
+                query_meta.bucket_name.to_owned(),
+                query_meta.file_name.to_owned()
+            );
+
             tokio::spawn(
                 async move {
-                    let mut parts: Vec<Bytes> = Vec::new();
+                    match state_one.dashmap.entry(url.clone()) {
+                        dashmap::Entry::Occupied(occupied_entry) => {
+                            if occupied_entry.get().to_owned() {
+                                tracing::info!("Value is already caching skip process");
+                                return;
+                            }
+                        }
+                        dashmap::Entry::Vacant(vacant_entry) => {
+                            tracing::info!(
+                                "Value is not cached, Add to dashmap and begin execution"
+                            );
+                            vacant_entry.insert(true);
+                            let mut parts: Vec<Bytes> = Vec::new();
 
-                    while let Some(chunk) = cache_rx.recv().await {
-                        parts.push(chunk);
+                            while let Some(chunk) = cache_rx.recv().await {
+                                parts.push(chunk);
+                            }
+
+                            let checksum = match checksum_rx.await {
+                                Ok(c) => {
+                                    tracing::info!("Checksum {c}");
+                                    c
+                                }
+                                Err(_) => {
+                                    tracing::info!("Failed to receive checksum");
+                                    return;
+                                }
+                            };
+
+                            let md5_val = upload_stream(
+                                &state_one.proxy_state.as_ref().unwrap().storage,
+                                &bucket_name,
+                                &query_key,
+                                parts,
+                            )
+                            .await
+                            .unwrap();
+
+                            let url = format!("{}/{}", &bucket_name, &query_key);
+
+                            if let Err(e) = ArtifactMetadataRepository::upsert(
+                                &state_one.proxy_state.as_ref().unwrap().db,
+                                &url,
+                                &md5_val,
+                                &checksum,
+                            )
+                            .await
+                            {
+                                tracing::error!("Error adding file to proxy state {:?}", e)
+                            }
+                        }
                     }
 
-                    let checksum = match checksum_rx.await {
-                        Ok(c) => {
-                            tracing::info!("Checksum {c}");
-                            c
-                        }
-                        Err(_) => {
-                            tracing::info!("Failed to receive checksum");
-                            return;
-                        }
-                    };
-
-                    let md5_val = upload_stream(
-                        &state_one.proxy_state.as_ref().unwrap().storage,
-                        &bucket_name,
-                        &query_key,
-                        parts,
-                    )
-                    .await
-                    .unwrap();
-
-                    let url = format!("{}/{}", &bucket_name, &query_key);
-
-                    if let Err(e) = ArtifactMetadataRepository::upsert(
-                        &state_one.proxy_state.as_ref().unwrap().db,
-                        &url,
-                        &md5_val,
-                        &checksum,
-                    )
-                    .await
-                    {
-                        tracing::error!("Error adding file to proxy state {:?}", e)
-                    }
+                    state_one.dashmap.remove(&url).unwrap();
                 }
                 .in_current_span(),
             );

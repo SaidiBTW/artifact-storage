@@ -1,7 +1,10 @@
 use std::sync::LazyLock;
 
+use axum::{body::Body, response::Response};
+use dashmap::DashMap;
 use dotenvy::var;
 use minio::s3::MinioClient;
+use moka::future::Cache;
 use shared::{db::PgPool, s3_client::AppError};
 
 use crate::services::auth_service::AuthService;
@@ -11,6 +14,7 @@ pub struct AppState {
     pub proxy_state: Option<ProxyState>,
     pub should_passthrough: bool,
     pub saas_storage: MinioClient,
+    pub dashmap: DashMap<String, bool>, // This is a lock to act as a 'Exactly once semantic for caching operations
 }
 
 pub struct Config {
@@ -57,6 +61,7 @@ impl AppState {
                     }),
                     should_passthrough: is_passthrough_state,
                     saas_storage: saas_storage,
+                    dashmap: DashMap::new(),
                 });
             } else {
                 is_passthrough_state = true;
@@ -70,6 +75,7 @@ impl AppState {
             proxy_state: None,
             should_passthrough: is_passthrough_state,
             saas_storage: saas_storage,
+            dashmap: DashMap::new(),
         })
     }
 }

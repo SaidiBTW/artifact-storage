@@ -1,0 +1,12 @@
+[package]
+name = "multiplexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+dotenvy = { workspace = true }
+tokio-util = { version = "0.7.18", features = ["io"] }
+futures-util = "0.3.32"
+dashmap = "6.2.1"
