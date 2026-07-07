@@ -1,5 +1,6 @@
 use aws_config::Region;
 use aws_sdk_s3::config::Credentials;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::{ByteStream, DateTime};
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::{Client, Config};
@@ -233,7 +234,7 @@ pub async fn fetch_object_metadata(
     client: &Client,
     bucket_name: String,
     file_name: String,
-) -> Result<S3Metadata, AppError> {
+) -> Result<S3Metadata, StorageError> {
     let object = client
         .head_object()
         .set_bucket(Some(bucket_name))
@@ -250,9 +251,14 @@ pub async fn fetch_object_metadata(
             });
         }
         Err(e) => {
-            tracing::info!("Error : {:?}", e);
+            // tracing::error!(
+            //     "Failed to fetch metadata: Code -  {:?}  |bool-test = {}| {:?}",
+            //     e.code(),
+            //     e.code() == Some("NotFound"),
+            //     e
+            // );
 
-            Err(AppError::S3MetadataNotFound)
+            return Err(e.into());
         }
     }
 }

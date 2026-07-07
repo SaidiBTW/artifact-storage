@@ -55,12 +55,34 @@ generate_corrupt_file(){
 
 #Generate Clean Files
 generate_clean_file "5KB_clean.bin" 1k 5
+generate_clean_file "10KB_clean.bin" 1k 10
+generate_clean_file "20KB_clean.bin" 1k 20
+generate_clean_file "30KB_clean.bin" 1k 30
+generate_clean_file "40KB_clean.bin" 1k 40
+generate_clean_file "50KB_clean.bin" 1k 50
+generate_clean_file "60KB_clean.bin" 1k 60
+generate_clean_file "70KB_clean.bin" 1k 70
+generate_clean_file "80KB_clean.bin" 1k 80
+generate_clean_file "90KB_clean.bin" 1k 90
 generate_clean_file "100KB_clean.bin" 1k 100
+generate_clean_file "200KB_clean.bin" 1k 200
+generate_clean_file "300KB_clean.bin" 1k 300
+generate_clean_file "400KB_clean.bin" 1k 400
 generate_clean_file "500KB_clean.bin" 1k 500
+generate_clean_file "600KB_clean.bin" 1k 600
+generate_clean_file "700KB_clean.bin" 1k 700
+generate_clean_file "800KB_clean.bin" 1k 800
+generate_clean_file "900KB_clean.bin" 1k 900
 generate_clean_file "1MB_clean.bin" 1m 1
+generate_clean_file "2MB_clean.bin" 1m 2
+generate_clean_file "3MB_clean.bin" 1m 3
+generate_clean_file "4MB_clean.bin" 1m 4
 generate_clean_file "5MB_clean.bin" 1m 5
-generate_clean_file "500MB_clean.bin" 1m 500
-generate_clean_file "1GB_clean.bin" 1m 1024
+generate_clean_file "6MB_clean.bin" 1m 6
+generate_clean_file "7MB_clean.bin" 1m 7
+generate_clean_file "8MB_clean.bin" 1m 8
+generate_clean_file "9MB_clean.bin" 1m 9
+generate_clean_file "10MB_clean.bin" 1m 10
 
 
 # Generate Corrupted Files

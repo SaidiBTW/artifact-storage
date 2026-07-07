@@ -160,7 +160,7 @@ pub async fn download_handler(
                         return serve_from_saas(state, query_meta).await;
                     }
                 },
-                Err(_) => serve_from_saas(state, query_meta).await,
+                Err(e) => serve_from_saas(state, query_meta).await,
             }
         } else {
             serve_from_saas(state, query_meta).await
@@ -304,9 +304,8 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
                 .body(body)
                 .unwrap()
         }
-        Err(_) => {
-            tracing::info!("Error fetching metadata from SAAS");
-            return DownloadError::FetchingMetadataError.into_response();
+        Err(e) => {
+            return e.into_response();
         }
     }
 }
