@@ -9,7 +9,6 @@ serde = { workspace = true }
 sqlx = { workspace = true, features = ["uuid", "chrono", "runtime-tokio"] }
 uuid = { version = "1.23.2", features = ["serde", "v4"] }
 tracing = { workspace = true }
-sled = "0.34.7"
 
 dotenvy = { workspace = true }
 tokio-util = { version = "0.7.18", features = ["io"] }
@@ -23,3 +22,4 @@ anyhow = "1.0.103"
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { workspace = true }
 md5 = { workspace = true }
+thiserror = { workspace = true }

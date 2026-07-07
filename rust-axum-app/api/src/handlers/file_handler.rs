@@ -1,12 +1,9 @@
 use aws_sdk_s3::Client;
-use axum::http::HeaderMap;
 
 use opentelemetry::KeyValue;
 use sha2::Digest;
 use sha2::Sha256;
 use shared::s3_client::fetch_object_metadata;
-use sqlx::types::chrono::DateTime;
-use sqlx::types::chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
@@ -26,19 +23,17 @@ use axum_extra::extract::Query;
 
 use bytes::Bytes;
 
-use shared::s3_client::{download_proxy_handler, upload_stream};
-use shared::{
-    models::ArtifactMetadata,
-    repositories::artifact_metadata_repository::ArtifactMetadataRepository,
-};
-
-use crate::types::error::AppError;
 use crate::{dtos::file_dto::UploadSuccessResponseDto, types::app_state::AppState};
 use crate::{
     dtos::file_dto::{DownloadRequestDto, UploadRequestDto},
     telemetry::metrics::ARTIFACTS_CREATED,
 };
 use crate::{telemetry::metrics::CACHE_LOOKUPS, types::error::DownloadError};
+use shared::s3_client::{download_proxy_handler, upload_stream};
+use shared::{
+    models::ArtifactMetadata,
+    repositories::artifact_metadata_repository::ArtifactMetadataRepository,
+};
 
 // async fn download_handler(State(state): State<Arc<AppState>>, Json(payload): Json<DownloadFileDto>) -> {}
 
@@ -62,7 +57,9 @@ pub async fn upload_handler(
                 total_upload_size += bytes.len();
                 chunks.push(bytes);
             }
-            Err(e) => todo!(),
+            Err(_) => {
+                tracing::info!("Error processing stream");
+            }
         }
     }
 
@@ -85,39 +82,6 @@ pub async fn upload_handler(
 
             ARTIFACTS_CREATED.add(1, &[]);
 
-            // if !state.should_passthrough.to_owned() {
-            //     // let state = Arc::clone(&state);
-            //     // tracing::info!("Saving file to db");
-            //     // let result = ArtifactMetadataRepository::upsert(
-            //     //     &state.proxy_state.as_ref().unwrap().db,
-            //     //     &format!("{}/{}", &success_dto.bucket, success_dto.object_name),
-            //     //     &checksum,
-            //     //     &checksum,
-            //     // )
-            //     // .await;
-
-            //     match result {
-            //         Ok(result) => {
-            //             return (StatusCode::CREATED, Json(success_dto)).into_response();
-            //         }
-            //         Err(Error::Database(db_err)) => {
-            //             let pg_err = db_err.downcast_ref::<PgDatabaseError>();
-            //             if pg_err.code() == "23505" {
-            //                 tracing::error!("Unique vioation for {}", checksum);
-            //                 return UploadError::UploadConflict.into_response();
-            //             } else {
-            //                 return UploadError::OtherError.into_response();
-            //             }
-            //         }
-            //         Err(e) => {
-            //             return (
-            //                 StatusCode::INTERNAL_SERVER_ERROR,
-            //                 Json::from("Error Unique violation constraint"),
-            //             )
-            //                 .into_response();
-            //         }
-            //     }
-            // }
             return (StatusCode::CREATED, Json(success_dto)).into_response();
         }
         Err(e) => {
@@ -131,7 +95,6 @@ pub async fn upload_handler(
 pub async fn download_handler(
     State(state): State<Arc<AppState>>,
     Query(query_meta): Query<DownloadRequestDto>,
-    headers: HeaderMap,
 ) -> Response {
     let url = format!(
         "{}/{}",
@@ -161,7 +124,7 @@ pub async fn download_handler(
                     Some(metadata) => {
                         let _metadata = metadata.clone();
                         //Evaluate etag field
-                        let saas_etag = s3_metadata.etag;
+                        let saas_etag = s3_metadata.etag.trim_matches('"').to_string(); //Remove RFC7232 specifications of sending back string etags with \"\"
                         let saas_last_modified = s3_metadata.last_modified.secs();
 
                         let proxy_etag = _metadata.etag.unwrap_or_else(|| {
@@ -171,8 +134,15 @@ pub async fn download_handler(
 
                         let proxy_last_modified = _metadata.last_modified.unwrap().timestamp();
 
+                        tracing::info!(
+                            "Proxy - Last Modified {proxy_last_modified} Etag : {proxy_etag}"
+                        );
+                        tracing::info!(
+                            "SAAS - Last Modified {saas_last_modified} Etag : {saas_etag}"
+                        );
+
                         //This shows that the proxy and saas have not gone out of sync
-                        let is_match = (saas_etag == "*" || saas_etag == proxy_etag)
+                        let is_match = (saas_etag == proxy_etag)
                             && (proxy_last_modified >= saas_last_modified);
 
                         if is_match {
@@ -216,7 +186,7 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
             let (client_tx, client_rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
 
             let (cache_tx, mut cache_rx) = mpsc::channel::<Bytes>(32);
-            let (checksum_tx, mut checksum_rx) = oneshot::channel::<String>();
+            let (checksum_tx, checksum_rx) = oneshot::channel::<String>();
 
             let query_key = query_meta.file_name.to_owned();
             let bucket_name = query_meta.bucket_name.to_owned();
@@ -334,8 +304,8 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
                 .body(body)
                 .unwrap()
         }
-        Err(e) => {
-            tracing::info!("Erro serving from Saas, {:?}", e);
+        Err(_) => {
+            tracing::info!("Error fetching metadata from SAAS");
             return DownloadError::FetchingMetadataError.into_response();
         }
     }
@@ -388,7 +358,7 @@ pub async fn serve_from_cache(
                 .body(body)
                 .unwrap()
         }
-        Err(_) => todo!(),
+        Err(_) => DownloadError::FetchingS3MetadataError.into_response(),
     }
 }
 
@@ -406,8 +376,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        dtos::file_dto::UploadSuccessResponseDto, routes::create_router,
-        services::auth_service::AuthService, types::app_state::AppState,
+        dtos::file_dto::UploadSuccessResponseDto, routes::create_router, types::app_state::AppState,
     };
 
     #[tokio::test]
@@ -445,18 +414,16 @@ mod tests {
     }
 
     async fn test_state() -> AppState {
-        let mut is_passthrough_state = false;
-        let db = match shared::db::init_pool(&var("DATABASE_URL").unwrap().to_string()).await {
+        let _db = match shared::db::init_pool(&var("DATABASE_URL").unwrap().to_string()).await {
             Ok(client) => Some(client),
             Err(_) => {
                 tracing::error!("Error initing DATABASE client");
-                is_passthrough_state = true;
 
                 None
             }
         };
 
-        let storage = match shared::s3_client::init_s3_client().await {
+        let _storage = match shared::s3_client::init_s3_client().await {
             Ok(client) => Some(client),
             Err(_) => {
                 tracing::error!("Error initing minio client");
@@ -471,13 +438,10 @@ mod tests {
         dotenvy::dotenv().ok();
         let state = Arc::new(test_state().await);
 
-        let mut is_passthrough_state = false;
-
-        let storage = match shared::s3_client::init_s3_client().await {
+        let _storage = match shared::s3_client::init_s3_client().await {
             Ok(client) => Some(client),
             Err(_) => {
                 tracing::error!("Error initing minio client");
-                is_passthrough_state = true;
 
                 None
             }

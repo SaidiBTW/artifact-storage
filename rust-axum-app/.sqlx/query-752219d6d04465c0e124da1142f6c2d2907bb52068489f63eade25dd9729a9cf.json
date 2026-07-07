@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, url,checksum, etag, last_modified, created_At, updated_at\n        FROM artifact_metadata\n        WHERE url = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "checksum",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "etag",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_modified",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "752219d6d04465c0e124da1142f6c2d2907bb52068489f63eade25dd9729a9cf"
+}

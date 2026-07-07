@@ -1,4 +1,7 @@
+import os
+import random
 import time
+from pathlib import Path
 
 from locust import HttpUser, TaskSet, between, constant, task
 from locust.clients import HttpSession
@@ -7,18 +10,24 @@ from locust.clients import HttpSession
 class MyUser(HttpUser):
   wait_time = between(2,5)
 
-  def on_start(self) -> None:
-    with open("../test_files/5MB_clean.bin", "rb") as file:
-      self.file_payload = file.read()
-      self.file_name = file.name
-
 
   @task
   def test_first_upload_task(self):
+    directory_path = "./test_files"
+
+    all_items = os.listdir(directory_path)
+    all_files = [f for f in all_items if os.path.isfile(os.path.join(directory_path, f))]  
+    print("Directory contents: ", all_files)
+    random_file = random.choice(all_files)
+    with open(f"./test_files/{random_file}", "rb") as file:
+      self.file_payload = file.read()
+      self.file_name = Path(file.name).name
+
+      print(f"File name : {self.file_name}")
     files = {
-      'file': ('5MB_clean.bin', self.file_payload, 'image/png')
+      'file': (self.file_name, self.file_payload)
     }
-    with self.client.post(f"/file/upload?file_name={time.time_ns()}&bucket_name=sample",files=files, catch_response=True) as response:
+    with self.client.post(f"/file/upload?file_name={self.file_name}&bucket_name=sample",files=files, catch_response=True) as response:
       if response.status_code == 201:
         response.success()
     
@@ -27,7 +36,19 @@ class MyUser(HttpUser):
 
   @task
   def get_download_task(self):
-    with self.client.get("/file/download?key=1782748709135144000&bucket_name=sample", catch_response=True) as response:
+    directory_path = "./test_files"
+
+    all_items = os.listdir(directory_path)
+    all_files = [f for f in all_items if os.path.isfile(os.path.join(directory_path, f))]  
+    print("Directory contents: ", all_files)
+    random_file = random.choice(all_files)
+    with open(f"./test_files/{random_file}", "rb") as file:
+      self.file_payload = file.read()
+      self.file_name = Path(file.name).name
+
+      print(f"File name : {self.file_name}")
+    file_name = self.file_name
+    with self.client.get(f"/file/download?key={file_name}&bucket_name=sample", catch_response=True) as response:
       if response.status_code == 200:
         response.success()
       else:
@@ -36,10 +57,15 @@ class MyUser(HttpUser):
 
 class TestCacheOnceSemantics(HttpUser):
   wait_time = constant(1)
-
+  
   @task
   def target_api_endpoint(self):
-    with self.client.get("/file/download?file_name=500MB_clean.bin&bucket_name=sample", catch_response=True) as response:
+    directory_path = "./test_files"
+    all_items = os.listdir(directory_path)
+    all_files = [f for f in all_items if os.path.isfile(os.path.join(directory_path, f))]  
+    print("Directory contents: ", all_files)
+    random_file = random.choice(all_files)
+    with self.client.get(f"/file/download?file_name={random_file}&bucket_name=sample", catch_response=True) as response:
       if (response.status_code == 200):
         response.success()
       else:

@@ -5,12 +5,8 @@ use opentelemetry::{
     KeyValue,
     global::{self, BoxedTracer},
 };
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig};
-use opentelemetry_sdk::{
-    Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
-};
-use opentelemetry_stdout::LogExporter;
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider, trace::SdkTracerProvider};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{
     EnvFilter,
@@ -113,7 +109,7 @@ pub fn init_telemetry(service_name: &str, otlp_endpoint: &str) -> anyhow::Result
     })
 }
 
-fn build_resource(service_name: &str, environment: &str) -> Resource {
+fn build_resource(service_name: &str, _environment: &str) -> Resource {
     let resource = Resource::builder()
         .with_service_name(service_name.to_string())
         .with_attribute(KeyValue::new("service.version", "1.0.0"))

@@ -1,16 +1,13 @@
 use std::sync::LazyLock;
 
 use aws_sdk_s3::Client;
-use axum::{body::Body, response::Response};
+
 use dashmap::DashMap;
 use dotenvy::var;
 
 use shared::{db::PgPool, s3_client::AppError};
 
-use crate::services::auth_service::AuthService;
-
 pub struct AppState {
-    pub auth_service: AuthService,
     pub proxy_state: Option<ProxyState>,
     pub should_passthrough: bool,
     pub saas_storage: Client,
@@ -56,7 +53,6 @@ impl AppState {
         if let Ok(storage) = storage {
             if let Ok(db) = db {
                 return Ok(AppState {
-                    auth_service: AuthService::new(),
                     proxy_state: Some(ProxyState {
                         db: db,
                         storage: storage,
@@ -73,7 +69,6 @@ impl AppState {
         };
 
         Ok(AppState {
-            auth_service: AuthService::new(),
             proxy_state: None,
             should_passthrough: is_passthrough_state,
             saas_storage: saas_storage,

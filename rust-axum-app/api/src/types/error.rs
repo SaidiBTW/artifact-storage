@@ -1,8 +1,13 @@
+use aws_sdk_s3::{
+    error::SdkError,
+    operation::{get_object::GetObjectError, put_object::PutObjectError},
+};
 use axum::{
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use thiserror::Error;
 
 pub enum AuthError {
     MissingToken,
@@ -47,6 +52,21 @@ impl IntoResponse for UploadError {
 
         (status, body).into_response()
     }
+}
+
+#[derive(Error, Debug)]
+pub enum StorageError {
+    #[error("Failed to download file from S3: {0}")]
+    Download(#[from] SdkError<GetObjectError>),
+
+    #[error("Failed to upload file to s3: {0}")]
+    Upload(#[from] SdkError<PutObjectError>),
+
+    #[error("The requested file '{0}' was not found in the bucket")]
+    FileNotFound(String),
+
+    #[error("Local I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub enum DownloadError {

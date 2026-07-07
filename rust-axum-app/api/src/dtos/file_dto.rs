@@ -1,11 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
-pub struct UploadFileDto {
-    bucket_name: String,
-    key: String,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadSuccessResponseDto {
     pub object_name: String,

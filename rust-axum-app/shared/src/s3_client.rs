@@ -7,7 +7,7 @@ use bytes::{Bytes, BytesMut};
 
 use std::env::var;
 
-use std::io::{self};
+use crate::error::StorageError;
 
 const UPLOAD_MULTI_PART_SIZE: usize = 64 * 1024 * 1024; //64 MB
 pub async fn init_s3_client() -> Result<Client, AppError> {
@@ -15,6 +15,7 @@ pub async fn init_s3_client() -> Result<Client, AppError> {
     dotenvy::dotenv().ok();
     let access_key = var("GARAGE_DEFAULT_ACCESS_KEY").expect("Access key required");
     let secret = var("GARAGE_DEFAULT_SECRET_KEY").expect("Secret Key Required");
+    let garage_url = var("GARAGE_URL").expect("GARAGE_URL required");
 
     let credentials = Credentials::new(access_key, secret, None, None, "static-provider");
 
@@ -22,7 +23,7 @@ pub async fn init_s3_client() -> Result<Client, AppError> {
         .credentials_provider(credentials)
         .behavior_version_latest()
         .region(Region::new("garage"))
-        .endpoint_url("http://localhost:3900")
+        .endpoint_url(garage_url)
         .force_path_style(true)
         .build();
 
@@ -41,10 +42,11 @@ pub async fn init_s3_client() -> Result<Client, AppError> {
 }
 
 pub async fn init_saas_s3_client() -> Result<Client, AppError> {
-    tracing::info!("Initializaing SAAS Client");
+    tracing::info!("Initializing SAAS Client");
     dotenvy::dotenv().ok();
     let access_key = var("GARAGE_DEFAULT_ACCESS_KEY").expect("Access key required");
     let secret = var("GARAGE_DEFAULT_SECRET_KEY").expect("Secret Key Required");
+    let garage_saas_url = var("GARAGE_SAAS_URL").expect("GARAGE_SAAS_URL required");
 
     let credentials = Credentials::new(access_key, secret, None, None, "static-provider");
 
@@ -52,7 +54,7 @@ pub async fn init_saas_s3_client() -> Result<Client, AppError> {
         .credentials_provider(credentials)
         .behavior_version_latest()
         .region(Region::new("garage"))
-        .endpoint_url("http://localhost:2900")
+        .endpoint_url(garage_saas_url)
         .force_path_style(true)
         .build();
 
@@ -60,7 +62,7 @@ pub async fn init_saas_s3_client() -> Result<Client, AppError> {
 
     match client.list_buckets().send().await {
         Ok(_) => {
-            tracing::info!("Can list bucket. SAAS Minio is online");
+            tracing::info!("Can list bucket. SAAS S3 is online");
         }
         Err(err) => {
             tracing::info!("Error listing buckets {:?}", err)
@@ -103,14 +105,13 @@ pub async fn upload_stream(
     bucket_name: &str,
     object_name: &str,
     chunks: Vec<Bytes>,
-) -> io::Result<String> {
+) -> Result<String, StorageError> {
     let upload = client
         .create_multipart_upload()
         .bucket(bucket_name)
         .key(object_name)
         .send()
-        .await
-        .unwrap();
+        .await?;
     let upload_id = upload.upload_id().unwrap();
     let mut combined_hashes = Vec::new();
     let mut completed_parts = Vec::new();
@@ -122,7 +123,7 @@ pub async fn upload_stream(
 
         while buffer.len() >= UPLOAD_MULTI_PART_SIZE {
             let part_data = buffer.split_to(UPLOAD_MULTI_PART_SIZE).freeze();
-            let chunk_size = part_data.len();
+            let _chunk_size = part_data.len();
 
             let digest = md5::compute(&part_data);
 
@@ -134,8 +135,7 @@ pub async fn upload_stream(
                 .set_part_number(Some(part_number))
                 .body(ByteStream::from(part_data))
                 .send()
-                .await
-                .unwrap();
+                .await?;
 
             completed_parts.push(
                 CompletedPart::builder()
@@ -152,7 +152,7 @@ pub async fn upload_stream(
 
     if !buffer.is_empty() || part_number == 1 {
         let part_data = buffer.freeze();
-        let chunk_size = part_data.len();
+        let _chunk_size = part_data.len();
 
         let digest = md5::compute(&part_data);
         let part_res = client
@@ -163,8 +163,7 @@ pub async fn upload_stream(
             .set_key(Some(object_name.to_string()))
             .set_bucket(Some(bucket_name.to_string()))
             .send()
-            .await
-            .unwrap();
+            .await?;
 
         combined_hashes.extend_from_slice(&digest.0);
 
@@ -187,8 +186,7 @@ pub async fn upload_stream(
                 .build(),
         )
         .send()
-        .await
-        .unwrap();
+        .await?;
 
     let final_digest = md5::compute(combined_hashes);
 
@@ -202,15 +200,14 @@ pub async fn download_proxy_handler(
     client: &Client,
     bucket_name: &str,
     object_name: &str,
-) -> io::Result<(ByteStream, u64)> {
+) -> Result<(ByteStream, u64), StorageError> {
     tracing::info!("{bucket_name}/{object_name} => Fetching object");
     let get_res = client
         .get_object()
         .set_bucket(Some(bucket_name.to_string()))
         .set_key(Some(object_name.to_string()))
         .send()
-        .await
-        .unwrap();
+        .await?;
 
     let (stream, size) = (get_res.body, get_res.content_length.unwrap());
 
@@ -238,22 +235,25 @@ pub async fn fetch_object_metadata(
     file_name: String,
 ) -> Result<S3Metadata, AppError> {
     let object = client
-        .get_object_attributes()
+        .head_object()
         .set_bucket(Some(bucket_name))
         .set_key(Some(file_name))
         .send()
         .await;
-    tracing::info!("Response metadata gotten back {:?}", object);
 
     match object {
         Ok(object) => {
             return Ok(S3Metadata {
-                size: object.object_size().unwrap() as u64,
+                size: object.content_length().unwrap() as u64,
                 etag: object.e_tag().unwrap().to_string(),
                 last_modified: object.last_modified.unwrap(),
             });
         }
-        Err(e) => Err(AppError::S3MetadataNotFound),
+        Err(e) => {
+            tracing::info!("Error : {:?}", e);
+
+            Err(AppError::S3MetadataNotFound)
+        }
     }
 }
 

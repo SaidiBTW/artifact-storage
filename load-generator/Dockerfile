@@ -14,4 +14,5 @@ FROM base
 WORKDIR /usr/src/app/
 COPY --from=builder /reqs /usr/local
 COPY ./load-generator/locustfile.py .
+COPY ./test_files/ ./test_files/
 ENTRYPOINT [ "locust", "--skip-log-setup" ]

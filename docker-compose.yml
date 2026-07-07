@@ -1,4 +1,45 @@
 services:
+  load-generator:
+    image: ${IMAGE_NAME}:${DEMO_VERSION}-load-generator
+    container_name: load-generator
+    build:
+      context: ./
+      dockerfile: ${LOAD_GENERATOR_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}:${DEMO_VERSION}-load-generator
+    environment:
+      - LOCUST_WEB_PORT
+      - LOCUST_USERS
+      - LOCUST_HOST
+      - LOCUST_WEB_HOST
+    ports:
+      - "8089:8089"
+  api:
+    image: ${IMAGE_NAME}:${DEMO_VERSION}-api
+    container_name: api
+    build:
+      context: ./
+      dockerfile: ${RUST_AXUM_DOCKERFILE}
+    environment:
+      - AWS_REGION
+      - AWS_SECRET_ACCESS_KEY
+      - OTEL_EXPORT_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME
+      - MINIO_URL
+      - MINIO_SAAS_URL
+      - GARAGE_URL=http://garage:3900
+      - GARAGE_SAAS_URL=http://garage_saas:2900
+      - GARAGE_CONFIG_FILE
+      - GARAGE_DEFAULT_ACCESS_KEY
+      - GARAGE_DEFAULT_SECRET_KEY
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      - postgres
+      - garage
+      - garage_saas
+    ports:
+      - "3000:3000"
+
   postgres:
     image: ${POSTGRES_IMAGE}
     container_name: postgres
@@ -16,6 +57,7 @@ services:
   garage:
     image: ${GARAGE_IMAGE}
     container_name: garage
+    restart: unless-stopped
     volumes:
       - ./garage/garage.toml:/etc/garage.toml
       - ./volume_data/garage/data:/var/lib/garage/data
@@ -30,9 +72,23 @@ services:
       - "3901:3901"
       - "3902:3902"
       - "3903:3903"
+  pumba-pause: # Pause garage and garage_saas every 5 minutes for 20s
+    image: ${PUMBA_IMAGE}
+    container_name: pumba-pause
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --random --interval 5m pause --duration 20s "re2:^(garage|garage_saas)$"
+  pumba-corrupt-stream: # Corrupt output from garage_saas for 45 seconds every 10m
+    image: ${PUMBA_IMAGE}
+    container_name: pumba-corrupt-stream
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 10m netem --duration 45s  corrupt --percent 5 garage_saas
+
   garage_webui:
     image: ${GARAGE_WEBUI_IMAGE}
     container_name: garage_webui
+    restart: unless-stopped
     volumes:
       - ./garage/garage.toml:/etc/garage.toml:ro
     ports:
@@ -45,6 +101,7 @@ services:
   garage_saas:
     image: ${GARAGE_IMAGE}
     container_name: garage_saas
+    restart: unless-stopped
     volumes:
       - ./garage/garage_saas.toml:/etc/garage.toml
       - ./volume_data/garage_saas/data:/var/lib/garage/data
@@ -62,6 +119,7 @@ services:
   garage_saas_webui:
     image: ${GARAGE_WEBUI_IMAGE}
     container_name: garage_saas_webui
+    restart: unless-stopped
     volumes:
       - ./garage/garage_saas.toml:/etc/garage.toml:ro
     ports:
@@ -70,23 +128,11 @@ services:
       API_BASE_URL: "http://garage_saas:2903"
       S3_ENDPOINT_URL: "http://garage_saas:2900"
 
-  load-generator:
-    image: ${IMAGE_NAME}:${DEMO_VERSION}-load-generator
-    container_name: load-generator
-    build:
-      context: ./
-      dockerfile: ${LOAD_GENERATOR_DOCKERFILE}
-      cache_from:
-        - ${IMAGE_NAME}:${DEMO_VERSION}-load-generator
-    environment:
-      - LOCUST_WEB_PORT
-      - LOCUST_USERS
-      - LOCUST_HOST
-      - LOCUST_WEB_HOST
   otel-collector:
     container_name: otel-collector
     image: ${COLLECTOR_CONTRIB_IMAGE}
     command: ["--config=/etc/otel-collector-config.yaml"]
+    restart: unless-stopped
     volumes:
       - ./otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
@@ -100,7 +146,6 @@ services:
     container_name: jaeger
     image: ${JAEGERTRACING_IMAGE}
     restart: unless-stopped
-
     environment:
       - COLLECTOR_OTLP_ENABLED=true
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
@@ -112,6 +157,7 @@ services:
   prometheus:
     image: ${PROMETHEUS_IMAGE}
     container_name: prometheus
+    restart: unless-stopped
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
     volumes:
@@ -121,6 +167,7 @@ services:
   grafana:
     image: ${GRAFANA_IMAGE}
     container_name: grafana
+    restart: unless-stopped
     ports:
       - "3001:3000" # Grafana UI
     volumes:

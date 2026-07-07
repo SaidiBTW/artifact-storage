@@ -1,41 +1,29 @@
 use api::{
     routes::create_router,
     telemetry::{
-        init::{TelemetryGuard, init_telemetry},
+        init::init_telemetry,
         metrics::{HTTP_REQUEST_DURATION, HTTP_REQUESTS_TOTAL},
     },
     types::app_state::AppState,
 };
 use dotenvy::dotenv;
-use opentelemetry::{
-    KeyValue,
-    global::{self, BoxedTracer},
-};
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_sdk::{
-    logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
-};
-use opentelemetry_stdout::{LogExporter, MetricExporter, SpanExporter};
+use opentelemetry::KeyValue;
+
 use tower_http::{
-    classify::{ServerErrorsAsFailures, SharedClassifier},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::{DefaultOnRequest, DefaultOnResponse, MakeSpan, OnResponse, TraceLayer},
+    trace::{MakeSpan, OnResponse, TraceLayer},
 };
 
-use std::{
-    env,
-    sync::{Arc, OnceLock},
-};
-use tracing_subscriber::{fmt, layer::SubscriberExt, registry, util::SubscriberInitExt};
+use std::{env, sync::Arc};
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    let telemetry_guard = init_telemetry(
+    let _telemetry_guard = init_telemetry(
         &env::var("OTEL_SERVICE_NAME").unwrap().to_string(),
         &env::var("OTEL_EXPORT_OTLP_ENDPOINT").unwrap().to_string(),
     )
-    .unwrap();
+    .expect("OTEL_SERVICE_NAME & OTEL_EXPORT_OTLP_ENDPOINT not set");
     // init_tracing();
 
     let app_state = Arc::new(AppState::init().await.unwrap());
@@ -128,11 +116,5 @@ impl<B> OnResponse<B> for HttpOnResponse {
         } else {
             span.record("otel.status_code", "OK");
         }
-
-        tracing::info!(
-            http.response.status_code = status,
-            latency_ms = latency,
-            "Finished processing request"
-        )
     }
 }

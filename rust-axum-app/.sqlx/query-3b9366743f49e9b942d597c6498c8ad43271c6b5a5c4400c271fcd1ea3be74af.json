@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO  artifact_metadata(url, checksum, etag, last_modified)\nVALUES ($1,$2,$3, NOW())\nON CONFLICT (url) DO UPDATE\nSET etag = EXCLUDED.etag,\nchecksum = EXCLUDED.checksum,\nupdated_at = NOW()\n\nRETURNING id, url, checksum, etag, last_modified, created_at, updated_at;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "checksum",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "etag",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_modified",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "3b9366743f49e9b942d597c6498c8ad43271c6b5a5c4400c271fcd1ea3be74af"
+}
