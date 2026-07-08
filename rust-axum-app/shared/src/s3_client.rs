@@ -1,6 +1,6 @@
 use aws_config::Region;
 use aws_sdk_s3::config::Credentials;
-use aws_sdk_s3::error::ProvideErrorMetadata;
+
 use aws_sdk_s3::primitives::{ByteStream, DateTime};
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::{Client, Config};
@@ -106,7 +106,7 @@ pub async fn upload_stream(
     bucket_name: &str,
     object_name: &str,
     chunks: Vec<Bytes>,
-) -> Result<String, StorageError> {
+) -> Result<S3Metadata, StorageError> {
     let upload = client
         .create_multipart_upload()
         .bucket(bucket_name)
@@ -189,12 +189,17 @@ pub async fn upload_stream(
         .send()
         .await?;
 
+    // Perform a redundant fetch to return metadata
+
     let final_digest = md5::compute(combined_hashes);
 
     let value = format!("{:x}-{}", final_digest, part_number);
 
+    let metadata =
+        fetch_object_metadata(client, bucket_name.to_string(), object_name.to_string()).await?;
+
     tracing::info!("Uploaded {} - MD5: {}", object_name, value);
-    Ok(value)
+    Ok(metadata)
 }
 
 pub async fn download_proxy_handler(

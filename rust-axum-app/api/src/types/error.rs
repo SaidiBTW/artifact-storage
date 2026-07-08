@@ -26,7 +26,7 @@ impl IntoResponse for AuthError {
         };
 
         let body = Json(serde_json::json!({
-      "error": error_message    }));
+      "error": error_message,    }));
 
         (status, body).into_response()
     }

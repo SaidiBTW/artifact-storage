@@ -4,6 +4,7 @@ use opentelemetry::KeyValue;
 use sha2::Digest;
 use sha2::Sha256;
 use shared::s3_client::fetch_object_metadata;
+use sqlx::types::chrono::DateTime;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
@@ -122,10 +123,16 @@ pub async fn download_handler(
             match result {
                 Ok(db_result) => match db_result {
                     Some(metadata) => {
+                        tracing::info!("db-result: {:?}", metadata);
                         let _metadata = metadata.clone();
                         //Evaluate etag field
-                        let saas_etag = s3_metadata.etag.trim_matches('"').to_string(); //Remove RFC7232 specifications of sending back string etags with \"\"
-                        let saas_last_modified = s3_metadata.last_modified.secs();
+                        let saas_etag = s3_metadata.etag.to_string();
+                        let saas_last_modified = DateTime::from_timestamp(
+                            s3_metadata.last_modified.secs(),
+                            s3_metadata.last_modified.subsec_nanos(),
+                        )
+                        .unwrap()
+                        .timestamp();
 
                         let proxy_etag = _metadata.etag.unwrap_or_else(|| {
                             tracing::info!("Error fetching etag");
@@ -133,13 +140,6 @@ pub async fn download_handler(
                         });
 
                         let proxy_last_modified = _metadata.last_modified.unwrap().timestamp();
-
-                        tracing::info!(
-                            "Proxy - Last Modified {proxy_last_modified} Etag : {proxy_etag}"
-                        );
-                        tracing::info!(
-                            "SAAS - Last Modified {saas_last_modified} Etag : {saas_etag}"
-                        );
 
                         //This shows that the proxy and saas have not gone out of sync
                         let is_match = (saas_etag == proxy_etag)
@@ -149,9 +149,14 @@ pub async fn download_handler(
                             tracing::info!("Cache found in proxy, pulling from cache");
                             return serve_from_cache(&cache_client, query_meta, metadata).await;
                         } else {
-                            tracing::info!(
-                                "Cache is out of date or empty. Pull from cache and refresh"
-                            );
+                            if saas_etag != proxy_etag {
+                                tracing::info!("Pulling from SAAS -----> Etag match failed")
+                            }
+                            if proxy_last_modified >= saas_last_modified {
+                                tracing::info!(
+                                    "Pulling from SAAS -----> SAAS more up to date than proxy"
+                                )
+                            }
                             return serve_from_saas(state, query_meta).await;
                         }
                     }
@@ -160,7 +165,7 @@ pub async fn download_handler(
                         return serve_from_saas(state, query_meta).await;
                     }
                 },
-                Err(e) => serve_from_saas(state, query_meta).await,
+                Err(_e) => serve_from_saas(state, query_meta).await,
             }
         } else {
             serve_from_saas(state, query_meta).await
@@ -232,7 +237,7 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
                                 }
                             };
 
-                            let md5_val = upload_stream(
+                            let s3_meta = upload_stream(
                                 &state_one.proxy_state.as_ref().unwrap().storage,
                                 &bucket_name,
                                 &query_key,
@@ -240,18 +245,33 @@ async fn serve_from_saas(state: Arc<AppState>, query_meta: DownloadRequestDto) -
                             )
                             .await
                             .unwrap();
+                            let last_modified = &DateTime::from_timestamp(
+                                s3_meta.last_modified.secs(),
+                                s3_meta.last_modified.subsec_nanos(),
+                            )
+                            .unwrap();
 
                             let url = format!("{}/{}", &bucket_name, &query_key);
 
-                            if let Err(e) = ArtifactMetadataRepository::upsert(
+                            match ArtifactMetadataRepository::upsert(
                                 &state_one.proxy_state.as_ref().unwrap().db,
                                 &url,
-                                &md5_val,
+                                &s3_meta.etag,
                                 &checksum,
+                                &DateTime::from_timestamp(
+                                    s3_meta.last_modified.secs(),
+                                    s3_meta.last_modified.subsec_nanos(),
+                                )
+                                .unwrap(),
                             )
                             .await
                             {
-                                tracing::error!("Error adding file to proxy state {:?}", e)
+                                Ok(row) => {
+                                    tracing::info!("Value saved to db")
+                                }
+                                Err(e) => {
+                                    tracing::error!("Error adding file to proxy state {:?}", e);
+                                }
                             }
                         }
                     }

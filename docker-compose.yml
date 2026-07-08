@@ -20,15 +20,17 @@ services:
     build:
       context: ./
       dockerfile: ${RUST_AXUM_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}:${DEMO_VERSION}-api
     environment:
       - AWS_REGION
       - AWS_SECRET_ACCESS_KEY
-      - OTEL_EXPORT_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORT_OTLP_ENDPOINT
       - OTEL_SERVICE_NAME
       - MINIO_URL
       - MINIO_SAAS_URL
-      - GARAGE_URL=http://garage:3900
-      - GARAGE_SAAS_URL=http://garage_saas:2900
+      - GARAGE_URL
+      - GARAGE_SAAS_URL
       - GARAGE_CONFIG_FILE
       - GARAGE_DEFAULT_ACCESS_KEY
       - GARAGE_DEFAULT_SECRET_KEY
@@ -85,6 +87,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 10m netem --duration 45s  corrupt --percent 5 garage_saas
 
+  pumba-cross-region-delay:
+    image: ${PUMBA_IMAGE}
+    container_name: pumba-cross-region-delay
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: netem --duration 8760h delay --time 150ms --jitter 30ms --distribution normal garage_saas
+    depends_on:
+      - garage_saas
+
   garage_webui:
     image: ${GARAGE_WEBUI_IMAGE}
     container_name: garage_webui
@@ -93,10 +104,11 @@ services:
       - ./garage/garage.toml:/etc/garage.toml:ro
     ports:
       - "3909:3909"
-
     environment:
       API_BASE_URL: "http://garage:3903"
       S3_ENDPOINT_URL: "http://garage:3900"
+    depends_on:
+      - garage
 
   garage_saas:
     image: ${GARAGE_IMAGE}
@@ -127,6 +139,8 @@ services:
     environment:
       API_BASE_URL: "http://garage_saas:2903"
       S3_ENDPOINT_URL: "http://garage_saas:2900"
+    depends_on:
+      - garage_saas
 
   otel-collector:
     container_name: otel-collector

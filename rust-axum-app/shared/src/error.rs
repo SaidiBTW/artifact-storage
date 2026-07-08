@@ -8,35 +8,6 @@ use aws_sdk_s3::{
 };
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use thiserror::Error;
-
-use crate::s3_client::AppError;
-
-// #[derive(Error, Debug)]
-// pub enum StorageError {
-// #[error("Failed to start multipart upload: {0}")]
-// CreateMultipartUpload(#[from] SdkError<CreateMultipartUploadError>),
-
-// #[error("Failed to upload part: {0}")]
-// UploadPartError(#[from] SdkError<UploadPartError>),
-
-// #[error("Failed to download file from S3: {0}")]
-// Download(#[from] SdkError<GetObjectError>),
-
-// #[error("Failed to complete multi part upload")]
-// CompleteMultipartUpload(#[from] SdkError<CompleteMultipartUploadError>),
-
-// // #[error("Failed to fetch head object")]
-// // FetchHeadBucket(#[from] SdkError<HeadObjectError>),
-// #[error("Failed to upload file to s3: {0}")]
-// Upload(#[from] SdkError<PutObjectError>),
-
-// #[error("The requested file '{0}' was not found in the bucket")]
-// FileNotFound(#[from] SdkError<NotFound>),
-
-// #[error("Local I/O error: {0}")]
-// Io(#[from] std::io::Error),
-// }
-
 fn parse_s3_error<E, R>(error: SdkError<E, R>) -> StorageError
 where
     E: ProvideErrorMetadata + std::fmt::Debug,
